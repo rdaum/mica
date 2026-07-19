@@ -1145,10 +1145,13 @@ fn public_fact_changes(
 ) -> Result<Vec<FactChange>, KernelError> {
     let mut visible = Vec::new();
     for change in changes {
-        if relation_has_active_rule_head(current.rules(), change.relation)
-            && current
-                .maintained_state()
-                .is_none_or(|maintained| !maintained.serves(change.relation))
+        if !relation_has_active_rule_head(current.rules(), change.relation) {
+            visible.push(change.clone());
+            continue;
+        }
+        if current
+            .maintained_state()
+            .is_none_or(|maintained| !maintained.serves(change.relation))
         {
             continue;
         }
@@ -1171,20 +1174,18 @@ fn public_fact_changes(
 }
 
 fn merge_fact_changes(changes: &mut Vec<FactChange>, additional: &[FactChange]) {
-    for change in additional {
-        if let Some(existing) = changes
-            .iter_mut()
-            .find(|existing| existing.relation == change.relation && existing.tuple == change.tuple)
-        {
-            existing.kind = change.kind;
-        } else {
-            changes.push(change.clone());
-        }
-    }
+    changes.extend(additional.iter().cloned());
     changes.sort_by(|left, right| {
         left.relation
             .cmp(&right.relation)
             .then_with(|| left.tuple.cmp(&right.tuple))
+    });
+    changes.dedup_by(|later, earlier| {
+        if later.relation != earlier.relation || later.tuple != earlier.tuple {
+            return false;
+        }
+        earlier.kind = later.kind;
+        true
     });
 }
 

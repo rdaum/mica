@@ -1199,6 +1199,41 @@ Consider only after synchronous maintenance is correct and measured:
 
 Each is an independent optimization, not a requirement for the core design.
 
+**Implementation decision, 2026-07-19:** Stage 8 added an independently keyed resident
+right-side GPU arrangement for supported immediate-value equality joins. Changing delta columns no
+longer forces the immutable full side to be encoded and sorted again. Cache hit and miss counters,
+GPU operator time, and cache evidence are included in the committed-maintenance benchmark.
+
+The resident arrangement removed the previous warm-cache penalty but did not justify GPU placement
+for committed maintenance on the GB10. For a 4,096-row delta joining 258,048 full rows with one key
+column and one result per delta row, native assertion commits had a 9.653 ms median and resident
+`wgpu` assertion commits had a 10.350 ms median, or 0.933x native performance. The measured GPU
+operator averaged 0.529 ms with 18 right-side cache hits and no misses during the sampled warm
+commits. Increasing the full side to 2,097,152 rows reduced warm `wgpu` performance to 0.830x native.
+A two-column, zero-match case reached 0.920x. These measurements include commit publication,
+weighted materialization, and consolidation.
+
+The same benchmark found and corrected a quadratic settled-change merge introduced with Stage 7.
+Sorting and deduplicating the authoritative and derived change streams restored the approximately
+9 ms native baseline without changing public zero-crossing semantics.
+
+Native arrangements therefore remain the default, and weighted GPU maintenance remains an explicit
+execution-context opt-in. GPU-side weight arithmetic and consolidation are not added: the resident
+GPU operator is already a small fraction of the end-to-end time, so moving checked `i64` arithmetic
+to a shader cannot provide the required 20 percent improvement on the measured shapes.
+
+The other Stage 8 options remain deferred independently:
+
+- synchronous maintenance has correct publication semantics and no measured catch-up requirement;
+  background work first needs a concrete latency workload and exact-version wait contract;
+- traces already compact after eight delta batches or when delta bytes reach one quarter of the
+  base and export retained-byte metrics; a global eviction budget first needs consumer pin and
+  unpin accounting plus a measured memory limit;
+- authoritative recovery and complete recomputation remain correct, with no restart measurement
+  justifying the validation and compatibility surface of persisted trace checkpoints; and
+- computed relation providers have no committed change-stream contract from which incremental
+  maintenance could be driven, so they continue to use the complete evaluator fallback.
+
 ## Correctness Verification
 
 ### Differential-versus-complete oracle

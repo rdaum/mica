@@ -81,7 +81,7 @@ fn main() -> Result<(), String> {
         accelerator.uses_shared_mappable_buffers(),
     );
     println!(
-        "full_rows,delta_rows,key_columns,match_rate,operation,backend,residency,host_us,speedup_vs_native,accelerated"
+        "full_rows,delta_rows,key_columns,match_rate,operation,backend,residency,host_us,speedup_vs_native,accelerated,gpu_operator_mean_us,right_cache_hits,right_cache_misses"
     );
 
     for &full_rows in &args.full_rows {
@@ -149,6 +149,7 @@ fn run_shape(
         native.assert_median,
         native.assert_median,
         false,
+        GpuEvidence::default(),
     );
     print_result(
         full_rows,
@@ -161,6 +162,7 @@ fn run_shape(
         native.retract_median,
         native.retract_median,
         false,
+        GpuEvidence::default(),
     );
     print_result(
         full_rows,
@@ -177,6 +179,7 @@ fn run_shape(
         accelerated.cold_assert,
         native.assert_median,
         accelerated.cold_accelerated,
+        accelerated.cold_evidence,
     );
     print_result(
         full_rows,
@@ -193,6 +196,7 @@ fn run_shape(
         accelerated.assert_median,
         native.assert_median,
         accelerated.warm_accelerated,
+        accelerated.warm_evidence,
     );
     print_result(
         full_rows,
@@ -209,6 +213,7 @@ fn run_shape(
         accelerated.retract_median,
         native.retract_median,
         accelerated.warm_accelerated,
+        accelerated.warm_evidence,
     );
     Ok(())
 }
@@ -219,6 +224,40 @@ struct BackendSamples {
     retract_median: Duration,
     cold_accelerated: bool,
     warm_accelerated: bool,
+    cold_evidence: GpuEvidence,
+    warm_evidence: GpuEvidence,
+}
+
+#[derive(Clone, Copy, Default)]
+struct GpuEvidence {
+    operator_duration_us: u64,
+    operator_count: u64,
+    right_cache_hits: isize,
+    right_cache_misses: isize,
+}
+
+impl GpuEvidence {
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            operator_duration_us: self
+                .operator_duration_us
+                .saturating_sub(earlier.operator_duration_us),
+            operator_count: self.operator_count.saturating_sub(earlier.operator_count),
+            right_cache_hits: self
+                .right_cache_hits
+                .saturating_sub(earlier.right_cache_hits),
+            right_cache_misses: self
+                .right_cache_misses
+                .saturating_sub(earlier.right_cache_misses),
+        }
+    }
+
+    fn operator_mean_us(self) -> f64 {
+        if self.operator_count == 0 {
+            return 0.0;
+        }
+        self.operator_duration_us as f64 / self.operator_count as f64
+    }
 }
 
 fn benchmark_backend(
@@ -232,6 +271,7 @@ fn benchmark_backend(
 ) -> Result<BackendSamples, String> {
     let kernel = make_kernel(full_rows, key_columns, execution_context)?;
     let accelerated_before = accelerated_count();
+    let cold_evidence_before = gpu_evidence();
     let cold_assert = apply_delta(
         &kernel,
         full_rows,
@@ -240,6 +280,7 @@ fn benchmark_backend(
         key_columns,
         true,
     )?;
+    let cold_evidence = gpu_evidence().since(cold_evidence_before);
     let cold_accelerated = accelerated_count() > accelerated_before;
     verify_joined_rows(&kernel, match_rate.output_rows(delta_rows))?;
     apply_delta(
@@ -274,6 +315,7 @@ fn benchmark_backend(
     }
 
     let accelerated_before = accelerated_count();
+    let warm_evidence_before = gpu_evidence();
     let mut assertions = Vec::with_capacity(iterations);
     let mut retractions = Vec::with_capacity(iterations);
     for _ in 0..iterations {
@@ -297,12 +339,15 @@ fn benchmark_backend(
         verify_joined_rows(&kernel, 0)?;
     }
     let warm_accelerated = accelerated_count() > accelerated_before;
+    let warm_evidence = gpu_evidence().since(warm_evidence_before);
     Ok(BackendSamples {
         cold_assert,
         assert_median: median(assertions),
         retract_median: median(retractions),
         cold_accelerated,
         warm_accelerated,
+        cold_evidence,
+        warm_evidence,
     })
 }
 
@@ -424,6 +469,16 @@ fn accelerated_count() -> isize {
         .get(EqualityJoinAccelerationPlacement::Accelerated)
 }
 
+fn gpu_evidence() -> GpuEvidence {
+    let metrics = mica_relation_wgpu::metrics();
+    GpuEvidence {
+        operator_duration_us: metrics.equality_join_duration_us.sum(),
+        operator_count: metrics.equality_join_duration_us.count(),
+        right_cache_hits: metrics.equality_join_right_cache_hits.sum(),
+        right_cache_misses: metrics.equality_join_right_cache_misses.sum(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn print_result(
     full_rows: usize,
@@ -436,12 +491,16 @@ fn print_result(
     duration: Duration,
     native: Duration,
     accelerated: bool,
+    evidence: GpuEvidence,
 ) {
     println!(
-        "{full_rows},{delta_rows},{key_columns},{},{operation},{backend},{residency},{:.3},{:.3},{accelerated}",
+        "{full_rows},{delta_rows},{key_columns},{},{operation},{backend},{residency},{:.3},{:.3},{accelerated},{:.3},{},{}",
         match_rate.label(),
         duration.as_secs_f64() * 1_000_000.0,
         native.as_secs_f64() / duration.as_secs_f64(),
+        evidence.operator_mean_us(),
+        evidence.right_cache_hits,
+        evidence.right_cache_misses,
     );
 }
 

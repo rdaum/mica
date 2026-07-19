@@ -293,10 +293,16 @@ struct JoinCacheKey {
     key_columns: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct JoinRightCacheKey {
+    sources: [usize; 2],
+    key_columns: u8,
+}
+
 struct EncodedJoin {
     left: Vec<Arc<EncodedColumn>>,
     right: Vec<Arc<EncodedColumn>>,
-    right_rows: wgpu::Buffer,
+    right_rows: Arc<wgpu::Buffer>,
     left_len: usize,
     right_len: usize,
 }
@@ -304,6 +310,17 @@ struct EncodedJoin {
 struct CachedJoin {
     sources: Vec<Weak<[Value]>>,
     encoded: Arc<EncodedJoin>,
+}
+
+struct EncodedJoinRight {
+    columns: Vec<Arc<EncodedColumn>>,
+    rows: Arc<wgpu::Buffer>,
+    len: usize,
+}
+
+struct CachedJoinRight {
+    sources: Vec<Weak<[Value]>>,
+    encoded: Arc<EncodedJoinRight>,
 }
 
 struct OutputBuffers {
@@ -370,6 +387,12 @@ pub struct RelationWgpuMetrics {
     #[help = "GPU equality join execution duration in microseconds"]
     pub equality_join_duration_us: Histogram,
 
+    #[help = "Resident equality join right-side arrangement cache hits"]
+    pub equality_join_right_cache_hits: Counter,
+
+    #[help = "Resident equality join right-side arrangement cache misses"]
+    pub equality_join_right_cache_misses: Counter,
+
     #[help = "GPU equality joins declined because the device was occupied"]
     pub equality_join_busy: Counter,
 
@@ -387,6 +410,8 @@ impl RelationWgpuMetrics {
             membership_duration_us: Histogram::with_latency_buckets(shard_count),
             membership_busy: Counter::new(shard_count),
             equality_join_duration_us: Histogram::with_latency_buckets(shard_count),
+            equality_join_right_cache_hits: Counter::new(shard_count),
+            equality_join_right_cache_misses: Counter::new(shard_count),
             equality_join_busy: Counter::new(shard_count),
             device_failures: Counter::new(shard_count),
         }
@@ -414,6 +439,7 @@ pub struct WgpuAccelerator {
     string_values_cache: [Mutex<HashMap<usize, CachedStringValues>>; CACHE_SHARDS],
     dictionary_cache: [Mutex<HashMap<(usize, usize), CachedPair>>; CACHE_SHARDS],
     join_cache: [Mutex<HashMap<JoinCacheKey, CachedJoin>>; CACHE_SHARDS],
+    join_right_cache: [Mutex<HashMap<JoinRightCacheKey, CachedJoinRight>>; CACHE_SHARDS],
     output_pool: Mutex<HashMap<u64, Vec<OutputBuffers>>>,
 }
 
@@ -538,6 +564,7 @@ impl WgpuAccelerator {
             string_values_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             dictionary_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             join_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            join_right_cache: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             output_pool: Mutex::new(HashMap::new()),
         })
     }
@@ -696,6 +723,124 @@ impl WgpuAccelerator {
         Some(unique)
     }
 
+    fn encoded_join_right(&self, sources: &[Arc<[Value]>]) -> Option<Arc<EncodedJoinRight>> {
+        if !matches!(sources.len(), 1 | 2) {
+            return None;
+        }
+        let len = sources.first()?.len();
+        if sources.iter().any(|source| source.len() != len) {
+            return None;
+        }
+        let mut source_pointers = [0usize; 2];
+        for (index, source) in sources.iter().enumerate() {
+            source_pointers[index] = source.as_ptr() as usize;
+        }
+        let key = JoinRightCacheKey {
+            sources: source_pointers,
+            key_columns: sources.len() as u8,
+        };
+        let shard = source_pointers
+            .iter()
+            .fold(0usize, |hash, pointer| hash.rotate_left(11) ^ pointer)
+            % CACHE_SHARDS;
+        {
+            let mut cache = self.join_right_cache[shard].lock().unwrap();
+            cache.retain(|_, cached| {
+                cached
+                    .sources
+                    .iter()
+                    .all(|source| source.strong_count() != 0)
+            });
+            if let Some(cached) = cache.get(&key)
+                && cached
+                    .sources
+                    .iter()
+                    .zip(sources)
+                    .all(|(cached, source)| Weak::ptr_eq(cached, &Arc::downgrade(source)))
+            {
+                metrics().equality_join_right_cache_hits.inc();
+                return Some(Arc::clone(&cached.encoded));
+            }
+        }
+
+        metrics().equality_join_right_cache_misses.inc();
+        let started = Instant::now();
+        let mut values = Vec::with_capacity(sources.len());
+        let mut encodings = Vec::with_capacity(sources.len());
+        for source in sources {
+            let encoding = detect_encoding(source, &[])?;
+            values.push(encode_column(source, encoding)?);
+            encodings.push(encoding);
+        }
+        let mut right_order = (0..len).collect::<Vec<_>>();
+        right_order.sort_unstable_by(|left, right| {
+            values
+                .iter()
+                .map(|column| column[*left].cmp(&column[*right]))
+                .find(|ordering| !ordering.is_eq())
+                .unwrap_or_else(|| left.cmp(right))
+        });
+        let columns = values
+            .iter()
+            .zip(&encodings)
+            .map(|(column, encoding)| {
+                let sorted = right_order
+                    .iter()
+                    .map(|row| column[*row])
+                    .collect::<Vec<_>>();
+                self.create_encoded_column(*encoding, &sorted)
+            })
+            .collect();
+        let right_rows = right_order
+            .iter()
+            .map(|row| u32::try_from(*row).ok())
+            .collect::<Option<Vec<_>>>()?;
+        let encoded = Arc::new(EncodedJoinRight {
+            columns,
+            rows: Arc::new(create_u32_buffer(
+                &self.device,
+                "mica-relation-equality-join-right-rows",
+                &right_rows,
+                wgpu::BufferUsages::STORAGE,
+            )),
+            len,
+        });
+        self.join_right_cache[shard].lock().unwrap().insert(
+            key,
+            CachedJoinRight {
+                sources: sources.iter().map(Arc::downgrade).collect(),
+                encoded: Arc::clone(&encoded),
+            },
+        );
+        metrics()
+            .encoded_column_duration_us
+            .record(duration_us(started.elapsed()));
+        Some(encoded)
+    }
+
+    fn encoded_immediate_join(&self, join: &EqualityJoin<'_>) -> Option<Arc<EncodedJoin>> {
+        let right = self.encoded_join_right(join.right)?;
+        let left = join
+            .left
+            .iter()
+            .map(|source| self.encoded_column(source, ColumnLayout::RowOrder))
+            .collect::<Option<Vec<_>>>()?;
+        if left
+            .iter()
+            .zip(&right.columns)
+            .any(|(left, right)| left.encoding != right.encoding)
+        {
+            return None;
+        }
+        Some(Arc::new(EncodedJoin {
+            left,
+            right: right.columns.clone(),
+            right_rows: Arc::clone(&right.rows),
+            left_len: join.left[0].len(),
+            right_len: right.len,
+        }))
+    }
+
     fn encoded_join(&self, join: &EqualityJoin<'_>) -> Option<Arc<EncodedJoin>> {
         if join.left.len() != join.right.len() || !matches!(join.left.len(), 1 | 2) {
             return None;
@@ -706,6 +851,14 @@ impl WgpuAccelerator {
             || join.right.iter().any(|column| column.len() != right_len)
         {
             return None;
+        }
+        if join
+            .left
+            .iter()
+            .chain(join.right)
+            .all(|source| detect_encoding(source, &[]).is_some())
+        {
+            return self.encoded_immediate_join(join);
         }
 
         let mut source_pointers = [0usize; 4];
@@ -790,12 +943,12 @@ impl WgpuAccelerator {
         let encoded = Arc::new(EncodedJoin {
             left,
             right,
-            right_rows: create_u32_buffer(
+            right_rows: Arc::new(create_u32_buffer(
                 &self.device,
                 "mica-relation-equality-join-right-rows",
                 &right_rows,
                 wgpu::BufferUsages::STORAGE,
-            ),
+            )),
             left_len,
             right_len,
         });
@@ -1576,8 +1729,8 @@ mod tests {
         let unary_right = Arc::from([1, 2, 1].map(|value| Value::int(value).unwrap()).to_vec());
         assert_eq!(
             accelerator.join_equality(EqualityJoin {
-                left: &[unary_left],
-                right: &[unary_right],
+                left: &[Arc::clone(&unary_left)],
+                right: &[Arc::clone(&unary_right)],
             }),
             AccelerationOutcome::Completed(vec![
                 EqualityJoinMatch {
@@ -1602,6 +1755,20 @@ mod tests {
                 },
             ])
         );
+        let right_cache_hits = metrics().equality_join_right_cache_hits.sum();
+        let replacement_left = Arc::from(
+            [3, 1, 2, 1]
+                .map(|value| Value::int(value).unwrap())
+                .to_vec(),
+        );
+        assert!(matches!(
+            accelerator.join_equality(EqualityJoin {
+                left: &[replacement_left],
+                right: &[unary_right],
+            }),
+            AccelerationOutcome::Completed(_)
+        ));
+        assert!(metrics().equality_join_right_cache_hits.sum() > right_cache_hits);
         let left_first = Arc::from(
             [1, 1, 2, 2]
                 .map(|value| Value::int(value).unwrap())
