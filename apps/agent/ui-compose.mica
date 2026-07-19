@@ -300,37 +300,15 @@ verb ui/tool_activity_node(agent @ #agent)
     end
   end
 
-  // Gather recent tool calls. Scanning ToolCall facts and their
-  // status/name/args/result relations.
+  // Gather recent tool calls from this agent's transcript projection.
   let items = []
   let count = 0
-  for found in ToolCall(?call)
-    let status = one ToolCallStatus(found[:call], ?status)
-    if status == nothing
-      status = "unknown"
-    end
-    let name = one ToolCallName(found[:call], ?name)
-    if name == nothing
-      name = "?"
-    end
-    let call_id = one ToolCallId(found[:call], ?id)
-    if call_id == nothing
-      call_id = ""
-    end
-    let args_text = one ToolCallArguments(found[:call], ?args)
-    if args_text == nothing
-      args_text = ""
-    end
-
+  for found in TranscriptToolCall(agent, ?message, ?call, ?call_id, ?name, ?arguments, ?status)
     let result_preview = ""
-    for r in ToolResultCall(?result, found[:call])
-      let content = one ToolResultContent(r[:result], ?content)
-      if content != nothing
-        result_preview = content
-      end
+    for result in TranscriptToolResult(agent, found[:call], ?result, ?content, ?is_error, ?details)
+      result_preview = result[:content]
     end
-
-    items = [@items, {:call -> found[:call], :status -> status, :name -> name, :id -> call_id, :args -> args_text, :result -> result_preview}]
+    items = [@items, {:call -> found[:call], :status -> found[:status], :name -> found[:name], :id -> found[:call_id], :args -> found[:arguments], :result -> result_preview}]
     count = count + 1
   end
 

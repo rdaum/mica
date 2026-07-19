@@ -35,6 +35,28 @@ make_functional_relation(:ToolResultCall, 2, [0])
 make_functional_relation(:ToolResultContent, 2, [0])
 make_functional_relation(:ToolResultIsError, 2, [0])
 make_functional_relation(:ToolResultDetails, 2, [0])
+make_relation(:TranscriptToolCall, 7)
+make_relation(:TranscriptToolResult, 6)
+
+// These projections carry only tool state belonging to one agent's
+// transcript. They let that agent's browser observe tool progress without
+// waking views for unrelated agents.
+TranscriptToolCall(agent, message, call, call_id, name, arguments, status) :-
+  TranscriptEntry(agent, transcript, seq, message, role, content),
+  ToolCall(call),
+  ToolCallMessage(call, message),
+  ToolCallId(call, call_id),
+  ToolCallName(call, name),
+  ToolCallArguments(call, arguments),
+  ToolCallStatus(call, status)
+
+TranscriptToolResult(agent, call, result, content, is_error, details) :-
+  TranscriptToolCall(agent, message, call, call_id, name, arguments, status),
+  ToolResult(result),
+  ToolResultCall(result, call),
+  ToolResultContent(result, content),
+  ToolResultIsError(result, is_error),
+  ToolResultDetails(result, details)
 
 // Built-in read-only tools.
 make_identity(:tool/read)

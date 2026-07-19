@@ -56,6 +56,7 @@ grant #web
     :event/Delivery
     :event/Seq
     :event/Source
+    :event/NarrativeEntry
   write:
     :event/Delivery
     :event/Seq
@@ -474,10 +475,7 @@ verb sync_view_dependencies(view)
   dependencies = [@dependencies, ui/view_dependency(:CanSee, [nothing, nothing])]
   dependencies = [@dependencies, ui/view_dependency(:Carrying, [nothing, nothing])]
   dependencies = [@dependencies, ui/view_dependency(:PresentActor, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:event/Delivery, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:event/Seq, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:event/Text, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:event/Source, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:event/NarrativeEntry, [current, nothing, nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ContextForPlan, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ContextSubject, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ContextScore, [nothing, nothing])]

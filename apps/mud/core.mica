@@ -108,6 +108,7 @@ make_relation(:event/Delivery, 2)
 make_functional_relation(:event/Seq, 2, [0])
 make_functional_relation(:event/Text, 2, [0])
 make_functional_relation(:event/Source, 2, [0])
+make_relation(:event/NarrativeEntry, 4)
 make_relation(:command/TrustedForName, 2)
 make_relation(:command/NameMatchable, 2)
 make_relation(:command/TrustedForGrammar, 2)
@@ -615,6 +616,7 @@ grant role #player
     :event/Seq
     :event/Text
     :event/Source
+    :event/NarrativeEntry
     :command/TrustedForName
     :command/NameMatchable
     :command/TrustedForGrammar
@@ -889,6 +891,14 @@ command/HandlerScope(actor, actor) :-
 
 command/HandlerScope(actor, room) :-
   LocatedIn(actor, room)
+
+// The browser narrative is a listener-scoped projection of the durable event
+// journal. Including the source makes grouped replacements observable while
+// retaining the event's stable sequence and identity for DOM reconciliation.
+event/NarrativeEntry(listener, seq, event, source) :-
+  event/Delivery(listener, event),
+  event/Seq(event, seq),
+  event/Source(event, source)
 
 verb event/next_seq(listener @ #player)
   let seq = 0

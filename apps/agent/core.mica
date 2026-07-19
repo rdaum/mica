@@ -52,6 +52,7 @@ make_functional_relation(:MessageRole, 2, [0])
 make_functional_relation(:MessageContent, 2, [0])
 make_functional_relation(:MessageCreatedAt, 2, [0])
 make_functional_relation(:MessageSource, 2, [0])
+make_relation(:TranscriptEntry, 6)
 
 make_relation(:InspectorTarget, 1)
 make_functional_relation(:InspectorKind, 2, [0])
@@ -155,11 +156,7 @@ verb agent/ensure_transcript(agent @ #agent, workspace)
 end
 
 verb agent/transcript(agent @ #agent)
-  let workspace = workspace/active(agent)
-  if workspace == nothing
-    return nothing
-  end
-  return agent/ensure_transcript(agent, workspace)
+  return one TranscriptAgent(?transcript, agent)
 end
 
 verb agent/append_message(agent @ #agent, role @ #string, content @ #string)
@@ -234,6 +231,16 @@ verb agent/messages_ordered(transcript)
   end
   return ordered
 end
+
+// The browser transcript is a per-agent projection of durable message state.
+// It gives a view one relation to observe rather than every stored message
+// relation in every agent's transcript.
+TranscriptEntry(agent, transcript, seq, message, role, content) :-
+  TranscriptAgent(transcript, agent),
+  MessageTranscript(message, transcript),
+  MessageSeq(message, seq),
+  MessageRole(message, role),
+  MessageContent(message, content)
 
 verb list_size_lt(items, target)
   let count = 0

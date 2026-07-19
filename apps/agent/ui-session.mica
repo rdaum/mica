@@ -60,6 +60,9 @@ grant #web
     :MessageSeq
     :MessageRole
     :MessageContent
+    :TranscriptEntry
+    :TranscriptToolCall
+    :TranscriptToolResult
     :InspectorTarget
     :InspectorKind
     :InspectorLabel
@@ -89,6 +92,7 @@ grant #web
     :sync_view_tree
     :ui/auth_required_node
     :ui/fact_dependency
+    :ui/view_dependency
     :ui/transcript_cutoff
     :ui/current_agent
     :ui/entity_from_literal
@@ -143,6 +147,7 @@ grant role #operator
     :MessageSeq
     :MessageRole
     :MessageContent
+    :TranscriptEntry
     :Tool
     :ToolName
     :ToolDescription
@@ -159,6 +164,8 @@ grant role #operator
     :ToolResultContent
     :ToolResultIsError
     :ToolResultDetails
+    :TranscriptToolCall
+    :TranscriptToolResult
     :source/Repository
     :source/RepositoryName
     :source/RepositoryRoot
@@ -230,6 +237,7 @@ grant role #operator
     :sync_view_dependencies
     :sync_view_tree
     :ui/fact_dependency
+    :ui/view_dependency
     :ui/transcript_cutoff
     :ui/flush
     :ui/current_agent
@@ -414,16 +422,17 @@ end
 verb ui/transcript_cutoff()
   let current = ui/current_agent()
   let revision = 1
-  let transcript = agent/transcript(current)
-  if transcript != nothing
-    for message in agent/messages(transcript)
-      let seq = message.messageSeq
-      if seq > revision || seq == revision
-        revision = seq + 1
-      end
+  for found in TranscriptEntry(current, ?transcript, ?seq, ?message, ?role, ?content)
+    let seq = found[:seq]
+    if seq > revision || seq == revision
+      revision = seq + 1
     end
   end
   return revision
+end
+
+verb ui/view_dependency(relation, bindings)
+  return {:subject -> :relation, :relation -> relation, :bindings -> bindings}
 end
 
 verb ui/fact_dependency(relation, bindings)
@@ -439,6 +448,7 @@ end
 
 verb sync_view_dependencies(view)
   let endpoint = endpoint()
+  let current = ui/current_agent()
   let dependencies = []
   dependencies = [@dependencies, ui/fact_dependency(:ui/View, [view])]
   dependencies = [@dependencies, ui/fact_dependency(:session/Actor, [endpoint, nothing])]
@@ -461,30 +471,14 @@ verb sync_view_dependencies(view)
   dependencies = [@dependencies, ui/fact_dependency(:WorkspaceRoot, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:WorkspaceProvider, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:WorkspaceRevision, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:Transcript, [nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:TranscriptAgent, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:TranscriptWorkspace, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:Message, [nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:MessageTranscript, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:MessageSeq, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:MessageRole, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:MessageContent, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:TranscriptEntry, [current, nothing, nothing, nothing, nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:Tool, [nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ToolName, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ToolDescription, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ToolParameters, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:ToolEnabled, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolCall, [nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolCallMessage, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolCallId, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolCallName, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolCallArguments, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolCallStatus, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolResult, [nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolResultCall, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolResultContent, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolResultIsError, [nothing, nothing])]
-  dependencies = [@dependencies, ui/fact_dependency(:ToolResultDetails, [nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:TranscriptToolCall, [current, nothing, nothing, nothing, nothing, nothing, nothing])]
+  dependencies = [@dependencies, ui/view_dependency(:TranscriptToolResult, [current, nothing, nothing, nothing, nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:source/Repository, [nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:source/RepositoryName, [nothing, nothing])]
   dependencies = [@dependencies, ui/fact_dependency(:source/RepositoryRoot, [nothing, nothing])]

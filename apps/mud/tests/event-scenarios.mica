@@ -249,3 +249,38 @@ verb test/event_delivery_replaces_group_for_listener()
 
   return true
 end
+
+verb test/narrative_entries_follow_delivery_and_replacement()
+  let first = event/with_group(event/scene(#event/look, "look", "event-line utility", "Searching {the d}...", {:actor -> #alice, :dobj -> #coin}), :inspect_coin)
+  let delivered = event/record_source(#alice, first)
+  let alice_entries = 0
+  let bob_entries = 0
+  for found in event/NarrativeEntry(#alice, ?seq, ?event, ?source)
+    if found[:event] == delivered
+      alice_entries = alice_entries + 1
+      test/assert_equal(found[:seq], delivered.event/seq, "narrative entry keeps delivery sequence")
+      test/assert_equal(found[:source], first, "narrative entry stores initial source")
+    end
+  end
+  for found in event/NarrativeEntry(#bob, ?seq, ?event, ?source)
+    if found[:event] == delivered
+      bob_entries = bob_entries + 1
+    end
+  end
+  test/assert_equal(alice_entries, 1, "narrative entry is visible to its listener")
+  test/assert_equal(bob_entries, 0, "narrative entry is not visible to another listener")
+
+  let replacement = event/replacing_group(event/scene(#event/look, "look", "event-line utility", "{Actor} {find|finds} {the d}.", {:actor -> #alice, :dobj -> #coin}), :inspect_coin)
+  let replaced = event/record_source(#alice, replacement)
+  alice_entries = 0
+  for found in event/NarrativeEntry(#alice, ?seq, ?event, ?source)
+    if found[:event] == replaced
+      alice_entries = alice_entries + 1
+      test/assert_equal(found[:seq], delivered.event/seq, "replacement keeps narrative entry sequence")
+      test/assert_equal(found[:source], replacement, "replacement updates narrative entry source")
+    end
+  end
+  test/assert_equal(alice_entries, 1, "replacement leaves one narrative entry")
+
+  return true
+end

@@ -1430,6 +1430,12 @@ fn runner_agent_llm_messages_with_tools_maps_transcript_with_tool_calls() {
              assert ToolCallName(call, \"read\")\n\
              assert ToolCallArguments(call, \"{\\\"path\\\":\\\"foo\\\"}\")\n\
              assert ToolCallStatus(call, \"complete\")\n\
+             let result = frob(#tool_result, [call])\n\
+             assert ToolResult(result)\n\
+             assert ToolResultCall(result, call)\n\
+             assert ToolResultContent(result, \"file contents\")\n\
+             assert ToolResultIsError(result, false)\n\
+             assert ToolResultDetails(result, \"{:status -> \\\"complete\\\"}\")\n\
              let m3 = frob(#event/tool_message, [t, 2])\n\
              assert Message(m3)\n\
              assert MessageTranscript(m3, t)\n\
@@ -1490,6 +1496,33 @@ fn runner_agent_llm_messages_with_tools_maps_transcript_with_tool_calls() {
             .unwrap_or_default(),
         "file contents"
     );
+
+    assert!(matches!(
+        runner
+            .run_source(
+                "let entries = 0\n\
+                 let calls = 0\n\
+                 let results = 0\n\
+                 for found in TranscriptEntry(#agent/default, ?transcript, ?seq, ?message, ?role, ?content)\n\
+                   entries = entries + 1\n\
+                 end\n\
+                 for found in TranscriptToolCall(#agent/default, ?message, ?call, ?call_id, ?name, ?arguments, ?status)\n\
+                   calls = calls + 1\n\
+                 end\n\
+                 for found in TranscriptToolResult(#agent/default, ?call, ?result, ?content, ?is_error, ?details)\n\
+                   results = results + 1\n\
+                 end\n\
+                 return [entries, calls, results]"
+            )
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. }
+            if value == Value::list([
+                Value::int(4).unwrap(),
+                Value::int(1).unwrap(),
+                Value::int(1).unwrap(),
+            ])
+    ));
 }
 
 #[test]
@@ -1563,6 +1596,13 @@ fn runner_agent_workspaces_binds_default_agent_to_source_root() {
             .unwrap()
             .outcome,
         TaskOutcome::Complete { value, .. } if value == Value::string("/tmp/agent-test-root")
+    ));
+    assert!(matches!(
+        runner
+            .run_source("return agent/transcript(#agent/default)")
+            .unwrap()
+            .outcome,
+        TaskOutcome::Complete { value, .. } if value == Value::nothing()
     ));
 }
 
@@ -2856,6 +2896,15 @@ fn runner_mud_narrative_renders_recent_event_window() {
 
     let report = runner
         .run_source("return test/ui_narrative_renders_structured_events()")
+        .unwrap();
+    assert!(
+        matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
+        "{}",
+        report.render()
+    );
+
+    let report = runner
+        .run_source("return test/narrative_entries_follow_delivery_and_replacement()")
         .unwrap();
     assert!(
         matches!(report.outcome, TaskOutcome::Complete { ref value, .. } if *value == Value::bool(true)),
