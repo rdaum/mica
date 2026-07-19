@@ -374,7 +374,7 @@ impl RuleSet {
         self.rules.iter()
     }
 
-    fn compile(&self) -> Result<&CompiledRuleSet, RuleError> {
+    pub(crate) fn compile(&self) -> Result<&CompiledRuleSet, RuleError> {
         self.compiled
             .get_or_init(|| {
                 let strata = self.stratified_rules()?;
@@ -470,37 +470,37 @@ impl From<KernelError> for RuleEvalError {
 type Binding = Vec<Option<Value>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledRule {
-    head_relation: RelationId,
-    head_terms: Vec<CompiledTerm>,
-    body: Vec<CompiledBodyItem>,
-    slot_count: usize,
+pub(crate) struct CompiledRule {
+    pub(crate) head_relation: RelationId,
+    pub(crate) head_terms: Vec<CompiledTerm>,
+    pub(crate) body: Vec<CompiledBodyItem>,
+    pub(crate) slot_count: usize,
     head_slots: BTreeSet<usize>,
     body_slots: Vec<BTreeSet<usize>>,
     batch_plan: Option<PhysicalQueryPlan>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledRuleSet {
-    strata: Vec<CompiledStratum>,
+pub(crate) struct CompiledRuleSet {
+    pub(crate) strata: Vec<CompiledStratum>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledStratum {
-    rules: Vec<CompiledRule>,
-    components: Vec<CompiledScc>,
+pub(crate) struct CompiledStratum {
+    pub(crate) rules: Vec<CompiledRule>,
+    pub(crate) components: Vec<CompiledScc>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledScc {
-    target_relations: BTreeSet<RelationId>,
-    rule_indices: Vec<usize>,
+pub(crate) struct CompiledScc {
+    pub(crate) target_relations: BTreeSet<RelationId>,
+    pub(crate) rule_indices: Vec<usize>,
     seed_rule_indices: Vec<usize>,
-    recursive_variants: Vec<CompiledRuleVariant>,
+    pub(crate) recursive_variants: Vec<CompiledRuleVariant>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompiledRuleVariant {
+pub(crate) struct CompiledRuleVariant {
     rule_index: usize,
     delta_body_index: usize,
 }
@@ -524,27 +524,27 @@ pub(crate) struct CompleteRuleEvaluation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledBodyItem {
+pub(crate) enum CompiledBodyItem {
     Atom(CompiledAtom),
     Guard(CompiledGuard),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledAtom {
-    relation: RelationId,
-    terms: Vec<CompiledTerm>,
-    negated: bool,
+pub(crate) struct CompiledAtom {
+    pub(crate) relation: RelationId,
+    pub(crate) terms: Vec<CompiledTerm>,
+    pub(crate) negated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CompiledGuard {
-    op: RuleComparisonOp,
-    left: CompiledTerm,
-    right: CompiledTerm,
+pub(crate) struct CompiledGuard {
+    pub(crate) op: RuleComparisonOp,
+    pub(crate) left: CompiledTerm,
+    pub(crate) right: CompiledTerm,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CompiledTerm {
+pub(crate) enum CompiledTerm {
     Var { symbol: Symbol, slot: usize },
     Value(Value),
 }
@@ -1769,7 +1769,7 @@ fn guard_value<'a>(
     }
 }
 
-fn compare_values(op: RuleComparisonOp, left: &Value, right: &Value) -> bool {
+pub(crate) fn compare_values(op: RuleComparisonOp, left: &Value, right: &Value) -> bool {
     use std::cmp::Ordering;
     match op {
         RuleComparisonOp::Eq => language_cmp::numeric_eq(left, right),

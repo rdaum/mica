@@ -23,6 +23,7 @@ mod batch;
 mod catalog;
 mod closure;
 mod computed;
+mod differential;
 mod dispatch;
 mod dispatch_cache;
 mod error;

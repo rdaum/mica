@@ -21,8 +21,9 @@ use crate::relation_algebra::{
 };
 use crate::snapshot::{Commit, CommitResult, FactChange, FactChangeKind};
 use crate::snapshot::{
-    active_rules, build_derived_relations, empty_derived_cache, empty_dispatch_cache,
-    empty_method_program_cache, empty_packed_cache, relation_has_active_rule_head,
+    active_rules, build_derived_relations, derived_cache_with, empty_derived_cache,
+    empty_dispatch_cache, empty_maintained_cache, empty_method_program_cache, empty_packed_cache,
+    maintained_cache_with, relation_has_active_rule_head,
 };
 use crate::{
     ApplicableMethodCall, Conflict, ConflictKind, ConflictPolicy, DispatchRead, DispatchRelations,
@@ -995,9 +996,21 @@ impl<'a> Transaction<'a> {
 
         next.version = current.version() + 1;
         next.derived_cache = empty_derived_cache();
+        next.maintained_cache = empty_maintained_cache();
         next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
+        if let Some(maintained) = current.maintained_state() {
+            let maintenance_start = Instant::now();
+            let maintained = maintained.advance(current, &next, &changes)?;
+            let derived = maintained.build_derived_relations(&next)?;
+            crate::metrics::record_differential_maintenance(
+                maintenance_start.elapsed(),
+                maintained.work(),
+            );
+            next.derived_cache = derived_cache_with(derived);
+            next.maintained_cache = maintained_cache_with(maintained);
+        }
         let commit = Commit {
             version: next.version,
             catalog_changes: Arc::from([]),

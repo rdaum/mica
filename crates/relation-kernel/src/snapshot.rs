@@ -12,6 +12,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::computed::{ComputedRelationRead, ComputedRelationRegistry};
+use crate::differential::MaintainedState;
 use crate::dispatch_cache::DispatchCache;
 use crate::index::RelationState;
 use crate::method_program_cache::MethodProgramCache;
@@ -28,6 +29,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub(crate) type DerivedCache =
     Arc<OnceLock<Result<BTreeMap<RelationId, RelationState>, KernelError>>>;
+pub(crate) type MaintainedCache = Arc<OnceLock<Arc<MaintainedState>>>;
 pub(crate) type PackedCache =
     Arc<Mutex<BTreeMap<(RelationId, Vec<Option<Value>>), Arc<PackedRelation>>>>;
 
@@ -153,6 +155,7 @@ pub struct Snapshot {
     pub(crate) rules: Vec<RuleDefinition>,
     pub(crate) computed_relations: Arc<ComputedRelationRegistry>,
     pub(crate) derived_cache: DerivedCache,
+    pub(crate) maintained_cache: MaintainedCache,
     pub(crate) packed_cache: PackedCache,
     pub(crate) dispatch_cache: DispatchCache,
     pub(crate) method_program_cache: MethodProgramCache,
@@ -411,6 +414,9 @@ impl Snapshot {
                     )
                     .map_err(KernelError::from)?;
                 let derived = build_derived_relations(&self.relations, derived)?;
+                if let Some(maintained) = MaintainedState::initialize(self, &derived)? {
+                    let _ = self.maintained_cache.set(maintained);
+                }
                 crate::metrics::record_derived_materialization(
                     start.elapsed(),
                     derived.iter().map(|(relation, state)| {
@@ -427,6 +433,10 @@ impl Snapshot {
             })
             .as_ref()
             .map_err(Clone::clone)
+    }
+
+    pub(crate) fn maintained_state(&self) -> Option<&Arc<MaintainedState>> {
+        self.maintained_cache.get()
     }
 
     pub(crate) fn cached_applicable_method_calls(
@@ -528,6 +538,26 @@ pub(crate) fn build_derived_relations(
 
 pub(crate) fn empty_derived_cache() -> DerivedCache {
     Arc::new(OnceLock::new())
+}
+
+pub(crate) fn derived_cache_with(derived: BTreeMap<RelationId, RelationState>) -> DerivedCache {
+    let cache = OnceLock::new();
+    cache
+        .set(Ok(derived))
+        .expect("new derived cache should be empty");
+    Arc::new(cache)
+}
+
+pub(crate) fn empty_maintained_cache() -> MaintainedCache {
+    Arc::new(OnceLock::new())
+}
+
+pub(crate) fn maintained_cache_with(state: Arc<MaintainedState>) -> MaintainedCache {
+    let cache = OnceLock::new();
+    cache
+        .set(state)
+        .expect("new maintained cache should be empty");
+    Arc::new(cache)
 }
 
 pub(crate) fn empty_packed_cache() -> PackedCache {

@@ -14,7 +14,7 @@
 use crate::index::RelationState;
 use crate::relation_states::RelationStates;
 use crate::snapshot::{
-    CommitHistory, active_rules, empty_derived_cache, empty_dispatch_cache,
+    CommitHistory, active_rules, empty_derived_cache, empty_dispatch_cache, empty_maintained_cache,
     empty_method_program_cache, empty_packed_cache,
 };
 use crate::{
@@ -54,6 +54,7 @@ impl RelationKernel {
             rules: Vec::new(),
             computed_relations: computed_relations.clone(),
             derived_cache: empty_derived_cache(),
+            maintained_cache: empty_maintained_cache(),
             packed_cache: empty_packed_cache(),
             dispatch_cache: empty_dispatch_cache(),
             method_program_cache: empty_method_program_cache(),
@@ -135,6 +136,7 @@ impl RelationKernel {
             rules,
             computed_relations: computed_relations.clone(),
             derived_cache: empty_derived_cache(),
+            maintained_cache: empty_maintained_cache(),
             packed_cache: empty_packed_cache(),
             dispatch_cache: empty_dispatch_cache(),
             method_program_cache: empty_method_program_cache(),
@@ -217,6 +219,7 @@ impl RelationKernel {
             rules,
             computed_relations: computed_relations.clone(),
             derived_cache: empty_derived_cache(),
+            maintained_cache: empty_maintained_cache(),
             packed_cache: empty_packed_cache(),
             dispatch_cache: empty_dispatch_cache(),
             method_program_cache: empty_method_program_cache(),
@@ -282,6 +285,7 @@ impl RelationKernel {
             rules: state.rules,
             computed_relations: computed_relations.clone(),
             derived_cache: empty_derived_cache(),
+            maintained_cache: empty_maintained_cache(),
             packed_cache: empty_packed_cache(),
             dispatch_cache: empty_dispatch_cache(),
             method_program_cache: empty_method_program_cache(),
@@ -320,6 +324,7 @@ impl RelationKernel {
         next.relations.insert(metadata.id(), relation);
         next.computed_relations = Arc::new(current.computed_relations.with_relation(&metadata));
         next.derived_cache = empty_derived_cache();
+        next.maintained_cache = empty_maintained_cache();
         next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
@@ -364,6 +369,7 @@ impl RelationKernel {
         let mut next = (*current).clone();
         next.rules = rules;
         next.derived_cache = empty_derived_cache();
+        next.maintained_cache = empty_maintained_cache();
         next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();
@@ -400,6 +406,7 @@ impl RelationKernel {
         let mut next = (*current).clone();
         next.rules = rules;
         next.derived_cache = empty_derived_cache();
+        next.maintained_cache = empty_maintained_cache();
         next.packed_cache = empty_packed_cache();
         next.dispatch_cache = empty_dispatch_cache();
         next.method_program_cache = empty_method_program_cache();

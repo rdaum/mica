@@ -180,6 +180,24 @@ pub struct RelationKernelMetrics {
     #[help = "Rows in each recursive frontier"]
     pub rule_frontier_rows: Histogram,
 
+    #[help = "Synchronous differential maintenance duration in microseconds"]
+    pub differential_maintenance_duration_us: Histogram,
+
+    #[help = "Input fact changes per differential maintenance pass"]
+    pub differential_input_changes: Histogram,
+
+    #[help = "Affected rule components per differential maintenance pass"]
+    pub differential_affected_components: Histogram,
+
+    #[help = "Candidate changes per differential maintenance pass"]
+    pub differential_candidate_changes: Histogram,
+
+    #[help = "Consolidated changes per differential maintenance pass"]
+    pub differential_consolidated_changes: Histogram,
+
+    #[help = "Visible zero-crossings per differential maintenance pass"]
+    pub differential_visible_changes: Histogram,
+
     #[help = "Packed union execution placement decisions"]
     pub parallel_union_placements: LabeledCounter<ParallelUnionPlacement>,
 
@@ -261,6 +279,12 @@ impl RelationKernelMetrics {
             rule_candidate_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             rule_novel_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             rule_frontier_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_maintenance_duration_us: Histogram::with_latency_buckets(shard_count),
+            differential_input_changes: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_affected_components: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_candidate_changes: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_consolidated_changes: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_visible_changes: Histogram::new(COUNT_BUCKETS, shard_count),
             parallel_union_placements: LabeledCounter::new(shard_count),
             parallel_union_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             parallel_union_duration_us: Histogram::with_latency_buckets(shard_count),
@@ -428,6 +452,31 @@ pub(crate) fn record_rule_fixpoint(
     for rows in frontier_rows {
         metrics.rule_frontier_rows.record(*rows as u64);
     }
+}
+
+pub(crate) fn record_differential_maintenance(
+    elapsed: Duration,
+    work: &crate::differential::MaintenanceWork,
+) {
+    let metrics = metrics();
+    metrics
+        .differential_maintenance_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+    metrics
+        .differential_input_changes
+        .record(work.input_changes as u64);
+    metrics
+        .differential_affected_components
+        .record(work.affected_components as u64);
+    metrics
+        .differential_candidate_changes
+        .record(work.candidate_changes as u64);
+    metrics
+        .differential_consolidated_changes
+        .record(work.consolidated_changes as u64);
+    metrics
+        .differential_visible_changes
+        .record(work.visible_changes as u64);
 }
 
 pub fn derived_relation_summaries(limit: usize) -> Vec<DerivedRelationSummary> {

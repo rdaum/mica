@@ -11,7 +11,7 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use crate::{RelationId, RuleError, Tuple};
+use crate::{RelationId, RuleError, Tuple, Version};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KernelError {
@@ -42,6 +42,19 @@ pub enum KernelError {
         arity: u16,
     },
     Persistence(String),
+    DifferentialWeightOverflow {
+        relation: RelationId,
+        operation: &'static str,
+        version: Version,
+        left: i64,
+        right: i64,
+    },
+    NegativeDifferentialSupport {
+        relation: RelationId,
+        tuple: Tuple,
+        version: Version,
+        support: i64,
+    },
     Rule(RuleError),
     Conflict(Conflict),
 }

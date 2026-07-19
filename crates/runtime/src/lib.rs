@@ -6889,6 +6889,30 @@ fn render_kernel_error(
             render_relation(relation)
         ),
         KernelError::Persistence(message) => format!("persistence error: {message}"),
+        KernelError::DifferentialWeightOverflow {
+            relation,
+            operation,
+            version,
+            left,
+            right,
+        } => format!(
+            "differential weight overflow for relation {} during {operation} at version {version}: {left} and {right}",
+            render_relation(relation)
+        ),
+        KernelError::NegativeDifferentialSupport {
+            relation,
+            tuple,
+            version,
+            support,
+        } => format!(
+            "negative differential support {support} for relation {} tuple {} at version {version}",
+            render_relation(relation),
+            render_value(
+                &Value::list(tuple.values().to_vec()),
+                identity_names,
+                relation_names
+            )
+        ),
         KernelError::Rule(rule_error) => format!("rule error: {rule_error:?}"),
         KernelError::Conflict(conflict) => format!(
             "commit conflict on relation {} over {}: {:?}",

@@ -12,11 +12,13 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    Atom, Commit, ExecutionContext, FactChangeKind, RelationId, RelationKernel, RelationMetadata,
-    Rule, RuleBodyItem, RuleSet, Term, Tuple,
+    Atom, Commit, ComputedRelation, ComputedRelationRead, ExecutionContext, FactChangeKind,
+    InMemoryCommitProvider, KernelError, RelationId, RelationKernel, RelationMetadata, Rule,
+    RuleBodyItem, RuleComparisonOp, RuleGuard, RuleSet, Term, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn rel(id: u64) -> RelationId {
@@ -29,6 +31,10 @@ fn int(value: i64) -> Value {
 
 fn var(name: &str) -> Term {
     Term::Var(Symbol::intern(name))
+}
+
+fn val(value: Value) -> Term {
+    Term::Value(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,6 +165,72 @@ fn retract_rows(kernel: &RelationKernel, relation: RelationId, rows: &[(i64, i64
             .unwrap();
     }
     tx.commit().unwrap().commit().clone()
+}
+
+fn derived_rows(snapshot: &crate::Snapshot, relation: RelationId, arity: usize) -> Vec<Tuple> {
+    snapshot
+        .maintained_state()
+        .expect("snapshot should retain eligible maintained state")
+        .build_derived_relations(snapshot)
+        .unwrap()
+        .get(&relation)
+        .map(|state| state.scan(&vec![None; arity]).unwrap())
+        .unwrap_or_default()
+}
+
+fn assert_maintained_matches_complete(
+    snapshot: &crate::Snapshot,
+    head_arities: &[(RelationId, usize)],
+) {
+    let maintained = snapshot
+        .maintained_state()
+        .expect("eligible snapshot should be maintained");
+    assert_eq!(maintained.version(), snapshot.version());
+    let complete = snapshot
+        .evaluate_complete_rules(&ExecutionContext::serial())
+        .unwrap()
+        .derived;
+    for (relation, arity) in head_arities {
+        assert_eq!(
+            derived_rows(snapshot, *relation, *arity),
+            complete.get(relation).cloned().unwrap_or_default(),
+            "derived relation #{relation:?} diverged at version {}",
+            snapshot.version()
+        );
+    }
+}
+
+fn visible_rows(
+    snapshot: &crate::Snapshot,
+    relation_arities: &[(RelationId, usize)],
+) -> BTreeMap<RelationId, BTreeSet<Tuple>> {
+    relation_arities
+        .iter()
+        .map(|(relation, arity)| {
+            (
+                *relation,
+                snapshot
+                    .scan(*relation, &vec![None; *arity])
+                    .unwrap()
+                    .into_iter()
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn apply_visible_changes(
+    mut visible: BTreeMap<RelationId, BTreeSet<Tuple>>,
+    changes: &[crate::FactChange],
+) -> BTreeMap<RelationId, BTreeSet<Tuple>> {
+    for change in changes {
+        let rows = visible.entry(change.relation).or_default();
+        match change.kind {
+            FactChangeKind::Assert => assert!(rows.insert(change.tuple.clone())),
+            FactChangeKind::Retract => assert!(rows.remove(&change.tuple)),
+        }
+    }
+    visible
 }
 
 #[test]
@@ -360,4 +432,384 @@ fn complete_oracle_distinguishes_extensional_and_derived_visibility() {
     let _measured_elapsed = oracle.epochs[2].elapsed;
     assert_eq!(oracle.epochs[2].version, commit.version());
     assert_eq!(commit.changes()[0].kind, FactChangeKind::Retract);
+}
+
+#[test]
+fn nonrecursive_positive_maintenance_matches_randomized_complete_recomputation() {
+    let kernel = RelationKernel::new();
+    create_relations(
+        &kernel,
+        &[
+            (400, "Left", 2),
+            (401, "Right", 2),
+            (402, "Joined", 2),
+            (403, "Projected", 1),
+            (404, "Unrelated", 1),
+        ],
+    );
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(402),
+                [var("from"), var("to")],
+                vec![
+                    RuleBodyItem::from(RuleGuard::new(
+                        RuleComparisonOp::Lt,
+                        var("from"),
+                        var("to"),
+                    )),
+                    RuleBodyItem::from(Atom::positive(rel(400), [var("from"), var("middle")])),
+                    RuleBodyItem::from(Atom::positive(rel(401), [var("middle"), var("to")])),
+                ],
+            ),
+            "Joined(from, to) :- from < to, Left(from, middle), Right(middle, to)",
+        )
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(403),
+                [var("from")],
+                [Atom::positive(rel(402), [var("from"), var("to")])],
+            ),
+            "Projected(from) :- Joined(from, to)",
+        )
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(403),
+                [var("from")],
+                [Atom::positive(rel(400), [var("from"), val(int(0))])],
+            ),
+            "Projected(from) :- Left(from, 0)",
+        )
+        .unwrap();
+
+    let mut left = BTreeSet::from([(0, 0), (1, 1), (2, 2)]);
+    let mut right = BTreeSet::from([(0, 3), (1, 3), (2, 4)]);
+    let mut seed = kernel.begin();
+    for (from, middle) in &left {
+        seed.assert(rel(400), Tuple::from([int(*from), int(*middle)]))
+            .unwrap();
+    }
+    for (middle, to) in &right {
+        seed.assert(rel(401), Tuple::from([int(*middle), int(*to)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+
+    let relation_arities = [(rel(400), 2), (rel(401), 2), (rel(402), 2), (rel(403), 1)];
+    let mut previous = kernel.snapshot();
+    assert_eq!(
+        previous.scan(rel(403), &[None]).unwrap(),
+        vec![
+            Tuple::from([int(0)]),
+            Tuple::from([int(1)]),
+            Tuple::from([int(2)])
+        ]
+    );
+    assert_maintained_matches_complete(&previous, &[(rel(402), 2), (rel(403), 1)]);
+    let retained = Arc::clone(&previous);
+
+    let mut random = 0x9e37_79b9_7f4a_7c15_u64;
+    for _ in 0..256 {
+        random = random
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let relation = if random & 1 == 0 { rel(400) } else { rel(401) };
+        let tuple = (((random >> 8) % 5) as i64, ((random >> 16) % 5) as i64);
+        let set = if relation == rel(400) {
+            &mut left
+        } else {
+            &mut right
+        };
+        let mut tx = kernel.begin();
+        if set.remove(&tuple) {
+            tx.retract(relation, Tuple::from([int(tuple.0), int(tuple.1)]))
+                .unwrap();
+        } else {
+            set.insert(tuple);
+            tx.assert(relation, Tuple::from([int(tuple.0), int(tuple.1)]))
+                .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let next = kernel.snapshot();
+        assert_maintained_matches_complete(&next, &[(rel(402), 2), (rel(403), 1)]);
+        let expected_visible = visible_rows(&next, &relation_arities);
+        let transformed = apply_visible_changes(
+            visible_rows(&previous, &relation_arities),
+            next.maintained_state().unwrap().visible_changes(),
+        );
+        assert_eq!(transformed, expected_visible);
+        assert_eq!(next.maintained_state().unwrap().work().input_changes, 1);
+        assert!((1..=2).contains(&next.maintained_state().unwrap().work().affected_components));
+        previous = next;
+    }
+
+    assert_eq!(
+        retained.scan(rel(403), &[None]).unwrap(),
+        vec![
+            Tuple::from([int(0)]),
+            Tuple::from([int(1)]),
+            Tuple::from([int(2)])
+        ]
+    );
+
+    let before_unrelated = kernel.snapshot();
+    let mut tx = kernel.begin();
+    tx.assert(rel(404), Tuple::from([int(99)])).unwrap();
+    tx.commit().unwrap();
+    let after_unrelated = kernel.snapshot();
+    assert_maintained_matches_complete(&after_unrelated, &[(rel(402), 2), (rel(403), 1)]);
+    assert_eq!(
+        after_unrelated
+            .maintained_state()
+            .unwrap()
+            .work()
+            .affected_components,
+        0
+    );
+    assert!(
+        after_unrelated
+            .maintained_state()
+            .unwrap()
+            .visible_changes()
+            .is_empty()
+    );
+    assert_eq!(
+        before_unrelated.scan(rel(403), &[None]).unwrap(),
+        after_unrelated.scan(rel(403), &[None]).unwrap()
+    );
+}
+
+#[test]
+fn nonrecursive_maintenance_preserves_multiple_and_extensional_supports() {
+    let kernel = RelationKernel::new();
+    create_relations(
+        &kernel,
+        &[(410, "Left", 2), (411, "Right", 2), (412, "Output", 2)],
+    );
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(412),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(410), [var("from"), var("middle")]),
+                    Atom::positive(rel(411), [var("middle"), var("to")]),
+                ],
+            ),
+            "Output(from, to) :- Left(from, middle), Right(middle, to)",
+        )
+        .unwrap();
+    assert_rows(&kernel, rel(410), &[(1, 2), (1, 3)]);
+    assert_rows(&kernel, rel(411), &[(2, 4), (3, 4)]);
+    assert_rows(&kernel, rel(412), &[(1, 4)]);
+
+    let snapshot = kernel.snapshot();
+    assert_eq!(
+        snapshot.scan(rel(412), &[None, None]).unwrap(),
+        vec![Tuple::from([int(1), int(4)])]
+    );
+    assert_maintained_matches_complete(&snapshot, &[(rel(412), 2)]);
+
+    retract_rows(&kernel, rel(411), &[(2, 4)]);
+    let snapshot = kernel.snapshot();
+    assert_maintained_matches_complete(&snapshot, &[(rel(412), 2)]);
+    assert!(
+        !snapshot
+            .maintained_state()
+            .unwrap()
+            .visible_changes()
+            .iter()
+            .any(|change| change.relation == rel(412))
+    );
+
+    retract_rows(&kernel, rel(411), &[(3, 4)]);
+    let snapshot = kernel.snapshot();
+    assert_maintained_matches_complete(&snapshot, &[(rel(412), 2)]);
+    assert!(derived_rows(&snapshot, rel(412), 2).is_empty());
+    assert_eq!(
+        snapshot.scan(rel(412), &[None, None]).unwrap(),
+        vec![Tuple::from([int(1), int(4)])]
+    );
+    assert!(
+        !snapshot
+            .maintained_state()
+            .unwrap()
+            .visible_changes()
+            .iter()
+            .any(|change| change.relation == rel(412))
+    );
+
+    retract_rows(&kernel, rel(412), &[(1, 4)]);
+    let snapshot = kernel.snapshot();
+    assert_maintained_matches_complete(&snapshot, &[(rel(412), 2)]);
+    assert!(snapshot.scan(rel(412), &[None, None]).unwrap().is_empty());
+    assert!(
+        snapshot
+            .maintained_state()
+            .unwrap()
+            .visible_changes()
+            .iter()
+            .any(|change| {
+                change.relation == rel(412) && change.kind == FactChangeKind::Retract
+            })
+    );
+}
+
+struct ConstantComputed;
+
+impl ComputedRelation for ConstantComputed {
+    fn name(&self) -> &'static str {
+        "constant"
+    }
+
+    fn matches(&self, metadata: &RelationMetadata) -> bool {
+        metadata.name().name() == Some("Computed")
+    }
+
+    fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+        &[]
+    }
+
+    fn scan(
+        &self,
+        _reader: &dyn ComputedRelationRead,
+        _metadata: &RelationMetadata,
+        _bindings: &[Option<Value>],
+    ) -> Result<Vec<Tuple>, KernelError> {
+        Ok(vec![Tuple::from([int(7)])])
+    }
+}
+
+#[test]
+fn unsupported_programs_and_dirty_transactions_use_complete_fallback() {
+    let recursive = RelationKernel::new();
+    create_relations(&recursive, &[(420, "Edge", 2), (421, "Reachable", 2)]);
+    recursive
+        .install_rule(
+            Rule::new(
+                rel(421),
+                [var("from"), var("to")],
+                [Atom::positive(rel(420), [var("from"), var("to")])],
+            ),
+            "Reachable(from, to) :- Edge(from, to)",
+        )
+        .unwrap();
+    recursive
+        .install_rule(
+            Rule::new(
+                rel(421),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(421), [var("from"), var("middle")]),
+                    Atom::positive(rel(420), [var("middle"), var("to")]),
+                ],
+            ),
+            "Reachable(from, to) :- Reachable(from, middle), Edge(middle, to)",
+        )
+        .unwrap();
+    assert_rows(&recursive, rel(420), &[(1, 2), (2, 3)]);
+    let snapshot = recursive.snapshot();
+    assert_eq!(snapshot.scan(rel(421), &[None, None]).unwrap().len(), 3);
+    assert!(snapshot.maintained_state().is_none());
+
+    let negated = RelationKernel::new();
+    create_relations(
+        &negated,
+        &[(430, "Node", 1), (431, "Blocked", 1), (432, "Visible", 1)],
+    );
+    negated
+        .install_rule(
+            Rule::new(
+                rel(432),
+                [var("node")],
+                [
+                    Atom::positive(rel(430), [var("node")]),
+                    Atom::negated(rel(431), [var("node")]),
+                ],
+            ),
+            "Visible(node) :- Node(node), !Blocked(node)",
+        )
+        .unwrap();
+    let mut tx = negated.begin();
+    tx.assert(rel(430), Tuple::from([int(1)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = negated.snapshot();
+    assert_eq!(snapshot.scan(rel(432), &[None]).unwrap().len(), 1);
+    assert!(snapshot.maintained_state().is_none());
+
+    let computed = RelationKernel::with_provider_and_computed_relations(
+        Arc::new(InMemoryCommitProvider::new()),
+        [Arc::new(ConstantComputed) as Arc<dyn ComputedRelation>],
+    );
+    create_relations(&computed, &[(440, "Computed", 1), (441, "Copy", 1)]);
+    computed
+        .install_rule(
+            Rule::new(
+                rel(441),
+                [var("value")],
+                [Atom::positive(rel(440), [var("value")])],
+            ),
+            "Copy(value) :- Computed(value)",
+        )
+        .unwrap();
+    let snapshot = computed.snapshot();
+    assert_eq!(
+        snapshot.scan(rel(441), &[None]).unwrap(),
+        vec![Tuple::from([int(7)])]
+    );
+    assert!(snapshot.maintained_state().is_none());
+
+    let eligible = RelationKernel::new();
+    create_relations(&eligible, &[(450, "Base", 1), (451, "Copy", 1)]);
+    eligible
+        .install_rule(
+            Rule::new(
+                rel(451),
+                [var("value")],
+                [Atom::positive(rel(450), [var("value")])],
+            ),
+            "Copy(value) :- Base(value)",
+        )
+        .unwrap();
+    let snapshot = eligible.snapshot();
+    assert!(snapshot.scan(rel(451), &[None]).unwrap().is_empty());
+    assert!(snapshot.maintained_state().is_some());
+    let mut tx = eligible.begin();
+    tx.assert(rel(450), Tuple::from([int(11)])).unwrap();
+    assert_eq!(
+        tx.scan(rel(451), &[None]).unwrap(),
+        vec![Tuple::from([int(11)])]
+    );
+    tx.commit().unwrap();
+    assert_maintained_matches_complete(&eligible.snapshot(), &[(rel(451), 1)]);
+
+    let added = eligible
+        .install_rule(
+            Rule::new(
+                rel(451),
+                [var("value")],
+                [Atom::positive(rel(450), [var("value")])],
+            ),
+            "Copy(value) :- Base(value)",
+        )
+        .unwrap();
+    assert!(eligible.snapshot().maintained_state().is_none());
+    assert_eq!(
+        eligible.snapshot().scan(rel(451), &[None]).unwrap(),
+        vec![Tuple::from([int(11)])]
+    );
+    assert_maintained_matches_complete(&eligible.snapshot(), &[(rel(451), 1)]);
+
+    eligible.disable_rule(added.id()).unwrap();
+    assert!(eligible.snapshot().maintained_state().is_none());
+    assert_eq!(
+        eligible.snapshot().scan(rel(451), &[None]).unwrap(),
+        vec![Tuple::from([int(11)])]
+    );
+    assert_maintained_matches_complete(&eligible.snapshot(), &[(rel(451), 1)]);
 }
