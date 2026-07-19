@@ -2,19 +2,19 @@
 
 A Mica world is live: facts change while the system runs, and rules re-derive their consequences on
 every commit. Most of the time, you care about a small part of that world — Alice's view of a room,
-the messages in one chat, the status of a single tool call — and you want to react when *that* part
+the messages in one chat, the status of a single tool call — and you want to react when _that_ part
 changes. The changes themselves are usually small: a few facts about a few objects (identities such
 as `#alice` or `#lamp`), while the rest of the world stays the same. You do not want to poll the
 whole world on a timer, and you do not want to re-check everything yourself.
 
 Mica gives you two things for this:
 
-- **`subscribe_changes`**, a runtime API that delivers exactly the facts that became true or
-  stopped being true after each commit that touched them; and
+- **`subscribe_changes`**, a runtime API that delivers exactly the facts that became true or stopped
+  being true after each commit that touched them; and
 - **differential evaluation**, the engine technique that makes those deliveries cheap enough to use
   on a large world by computing changes from changes rather than from scratch.
 
-This chapter is mostly about the first. The engine technique has a name — *differential Datalog* —
+This chapter is mostly about the first. The engine technique has a name — _differential Datalog_ —
 and gets a section of its own, because knowing the name helps you read the rest of the docs and the
 runtime source. But the user-facing idea is simple: tell Mica what you care about, and Mica tells
 you when it changed.
@@ -42,19 +42,19 @@ commit()
 let ready = mailbox_recv([receiver])
 ```
 
-The binding list has one entry for each relation column. A value fixes that column; `nothing`
-leaves it open. Here the subscription covers every tuple whose first value is `#alice`.
+The binding list has one entry for each relation column. A value fixes that column; `nothing` leaves
+it open. Here the subscription covers every tuple whose first value is `#alice`.
 
 The subject controls what is observed:
 
-| Subject     | Meaning                                                                 |
-| ----------- | ----------------------------------------------------------------------- |
-| `:facts`    | changes to asserted facts in a stored relation                          |
-| `:relation` | changes to the relation's complete visible result, including rule facts |
-| `:catalogue`| relation and rule catalogue changes; reserved for root authority         |
+| Subject      | Meaning                                                                 |
+| ------------ | ----------------------------------------------------------------------- |
+| `:facts`     | changes to asserted facts in a stored relation                          |
+| `:relation`  | changes to the relation's complete visible result, including rule facts |
+| `:catalogue` | relation and rule catalogue changes; reserved for root authority        |
 
-Use `:facts` when the application cares about the stored statements themselves. Use `:relation`
-when it cares whether a stored or derived answer became true or false.
+Use `:facts` when the application cares about the stored statements themselves. Use `:relation` when
+it cares whether a stored or derived answer became true or false.
 
 The initial-delivery argument is either:
 
@@ -126,9 +126,9 @@ verb sync_view_dependencies(view)
 end
 ```
 
-The host subscribes on behalf of the view. When a relevant commit changes
-`ChatRenderedMessage`, the host renders `sync_view_tree(view)` again, compares the new tree with the
-previous tree, and sends the browser a DOM patch.
+The host subscribes on behalf of the view. When a relevant commit changes `ChatRenderedMessage`, the
+host renders `sync_view_tree(view)` again, compares the new tree with the previous tree, and sends
+the browser a DOM patch.
 
 This separates three jobs:
 
@@ -163,8 +163,8 @@ VisibleTo(actor, object) :-
 ```
 
 You do not need to know Datalog's theory to write Mica rules. The reason the name comes up here is
-that there is a set of techniques around one specific question: *given that the rules stay the same
-but the facts change, how do the derived answers change?* Those techniques are called
+that there is a set of techniques around one specific question: _given that the rules stay the same
+but the facts change, how do the derived answers change?_ Those techniques are called
 **differential** Datalog, and they are what Mica uses to keep a live world's derived relations
 current without recomputing them from scratch on every commit.
 
@@ -221,15 +221,15 @@ assert LocatedIn(#lamp, #courtyard)
 When the task commits, two stored facts change. Those changes in turn alter the result of
 `VisibleTo`:
 
-| Relation    | Became true                       | Stopped being true                |
-| ----------- | --------------------------------- | --------------------------------- |
-| `LocatedIn` | `LocatedIn(#lamp, #courtyard)`    | `LocatedIn(#lamp, #workshop)`     |
-| `VisibleTo` | `VisibleTo(#bob, #lamp)`          | `VisibleTo(#alice, #lamp)`        |
+| Relation    | Became true                    | Stopped being true            |
+| ----------- | ------------------------------ | ----------------------------- |
+| `LocatedIn` | `LocatedIn(#lamp, #courtyard)` | `LocatedIn(#lamp, #workshop)` |
+| `VisibleTo` | `VisibleTo(#bob, #lamp)`       | `VisibleTo(#alice, #lamp)`    |
 
 The naive way to get the new `VisibleTo` is to forget every previous answer and recompute visibility
 for the whole world. That works, and Mica will do it when it has to. But it is wasteful when only
 two rows of `LocatedIn` changed. The differential approach starts from those two changed rows and
-asks: which `VisibleTo` results could possibly have changed because of *these* edits? It then
+asks: which `VisibleTo` results could possibly have changed because of _these_ edits? It then
 recomputes only those.
 
 You will sometimes see this written in the literature as `+1` and `-1` changes, meaning a fact (or
@@ -262,12 +262,12 @@ work through joins and multiple proofs without exposing duplicate facts to Mica 
 
 Recursive rules need a different approach. Mica stores each derived recursive fact with simple
 presence, not a count of alternative recursive paths. When an input is retracted, the runtime runs
-an **overdelete** pass that tentatively removes everything that depended on the retracted fact,
-then a **rederivation** pass that puts back any of those facts which still have an independent
-proof. This avoids both losing a still-supported fact and keeping a fact with no remaining proof.
-Recursive maintenance proceeds in frontiers: Mica starts with the changed rows, follows the part of
-the recursive relation they affect, and stops when an iteration produces no further changes. This
-is the change-oriented counterpart to computing a complete recursive fixpoint from an empty slate.
+an **overdelete** pass that tentatively removes everything that depended on the retracted fact, then
+a **rederivation** pass that puts back any of those facts which still have an independent proof.
+This avoids both losing a still-supported fact and keeping a fact with no remaining proof. Recursive
+maintenance proceeds in frontiers: Mica starts with the changed rows, follows the part of the
+recursive relation they affect, and stops when an iteration produces no further changes. This is the
+change-oriented counterpart to computing a complete recursive fixpoint from an empty slate.
 
 ## What Mica Keeps Between Commits
 
@@ -284,16 +284,16 @@ authoritative. A snapshot presents ordinary stored and derived relations, and a 
 read one coherent snapshot as described in
 [Tasks and Transactions](../runtime/tasks-and-transactions.md).
 
-If maintained state is cold or unsuitable, Mica can fall back to computing the complete rule
-result. Rule and relation catalogue changes can also require rebuilding maintained state.
-Differential maintenance is an evaluation strategy, not a different meaning for the program: the
-answers are the same either way.
+If maintained state is cold or unsuitable, Mica can fall back to computing the complete rule result.
+Rule and relation catalogue changes can also require rebuilding maintained state. Differential
+maintenance is an evaluation strategy, not a different meaning for the program: the answers are the
+same either way.
 
 ## Costs And Good Fits
 
-Differential maintenance works best when the world is large, commits are small, rules remain
-stable, and derived results are read or observed repeatedly. Reachability, visibility, authority,
-dependency analysis, live work queues, and collaborative views often have this shape.
+Differential maintenance works best when the world is large, commits are small, rules remain stable,
+and derived results are read or observed repeatedly. Reachability, visibility, authority, dependency
+analysis, live work queues, and collaborative views often have this shape.
 
 It is not a promise that every small input has a small result. Removing one important edge can
 change an entire reachability graph. Differential maintenance still has to process every genuinely

@@ -27,8 +27,8 @@ world. It becomes a poor fit when:
 
 Differential maintenance changes the unit of work. Instead of asking, "What is the complete answer
 for this new snapshot?", it asks, "What changed in the answer because of these assertions and
-retractions?" The desired cost is proportional to the changed input and its affected dependency
-cone rather than the size of the whole world. This is not a complexity guarantee: a one-tuple input
+retractions?" The desired cost is proportional to the changed input and its affected dependency cone
+rather than the size of the whole world. This is not a complexity guarantee: a one-tuple input
 change can legitimately affect millions of results. It is an opportunity to avoid work on the
 unaffected majority.
 
@@ -36,9 +36,9 @@ This matters for more than query latency:
 
 - **Predictable live reads:** warm derived relations do not impose a complete materialization pause
   on the first task that reads them after every commit.
-- **Reactive output:** the maintenance engine naturally knows which derived tuples became visible
-  or disappeared. The runtime can publish settled changes to mailbox subscribers without rescanning
-  and diffing a full answer.
+- **Reactive output:** the maintenance engine naturally knows which derived tuples became visible or
+  disappeared. The runtime can publish settled changes to mailbox subscribers without rescanning and
+  diffing a full answer.
 - **Efficient recursion:** reachability, containment, delegation, and dependency closures can reuse
   settled work from prior versions.
 - **Correct retractions:** removing a fact propagates through the same dependency graph as adding
@@ -107,9 +107,9 @@ then publish a complete authority-consistent snapshot. The same pattern applies 
 - feature and entitlement eligibility; and
 - explanations of which policy facts make an action allowed or denied.
 
-Authority construction must still occur at the task or session boundary described by Mica's
-security model. Incremental relations make the effective policy inputs cheaper to keep current; they
-do not turn durable authority policy into checkpointed capability values.
+Authority construction must still occur at the task or session boundary described by Mica's security
+model. Incremental relations make the effective policy inputs cheaper to keep current; they do not
+turn durable authority policy into checkpointed capability values.
 
 ### Live worlds, simulations, and games
 
@@ -214,16 +214,16 @@ inference and action.
 
 ### Application summary
 
-| Application                  | Changing base facts                                  | Useful maintained results                                      |
-| ---------------------------- | ---------------------------------------------------- | -------------------------------------------------------------- |
-| Observability                | health, alerts, deployments, topology                | blast radius, correlated incidents, actionable alerts          |
-| Authorization and compliance | roles, grants, policy, resource membership           | effective permissions, violations, eligibility                 |
-| Worlds and simulations       | location, state, connections, actor activity         | reachability, visibility, interaction scope                    |
-| Reactive UI                  | application and session state                        | visible components, actions, filtered work                     |
-| Knowledge graphs             | assertions, classifications, references              | closure, affected conclusions, consistency failures            |
-| Build and program analysis   | syntax, definitions, calls, dependencies             | rebuild sets, affected tests, analysis findings                |
-| Control planes               | desired state, observed state, topology, constraints | drift, placement, blocked work, reconciliation candidates      |
-| Agent workspaces             | goals, tasks, results, resources, permissions        | ready work, unmet prerequisites, affected collaborators        |
+| Application                  | Changing base facts                                  | Useful maintained results                                 |
+| ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------- |
+| Observability                | health, alerts, deployments, topology                | blast radius, correlated incidents, actionable alerts     |
+| Authorization and compliance | roles, grants, policy, resource membership           | effective permissions, violations, eligibility            |
+| Worlds and simulations       | location, state, connections, actor activity         | reachability, visibility, interaction scope               |
+| Reactive UI                  | application and session state                        | visible components, actions, filtered work                |
+| Knowledge graphs             | assertions, classifications, references              | closure, affected conclusions, consistency failures       |
+| Build and program analysis   | syntax, definitions, calls, dependencies             | rebuild sets, affected tests, analysis findings           |
+| Control planes               | desired state, observed state, topology, constraints | drift, placement, blocked work, reconciliation candidates |
+| Agent workspaces             | goals, tasks, results, resources, permissions        | ready work, unmet prerequisites, affected collaborators   |
 
 ## When It Is And Is Not Worthwhile
 
@@ -253,8 +253,8 @@ every relation.
 ## Summary
 
 Mica should incrementally maintain rule-derived relations across committed snapshots by adopting the
-core model used by differential Datalog and differential dataflow: versioned signed changes,
-indexed traces, consolidation, and iterative feedback for recursive rules.
+core model used by differential Datalog and differential dataflow: versioned signed changes, indexed
+traces, consolidation, and iterative feedback for recursive rules.
 
 This is an extension of the current relation kernel, not a replacement for it. The authoritative
 state remains Mica's MVCC relation store. Differential state is a reconstructable execution cache
@@ -273,8 +273,7 @@ The division of responsibility is:
 - the existing packed executor implements native bulk relational operators;
 - the existing `wgpu` backend accelerates eligible large membership and equality-join operators;
 - Fjall persists durable authoritative facts and catalogue changes, not derived execution traces;
-- the compiler continues to expose ordinary relation rules without differential-specific syntax;
-  and
+- the compiler continues to expose ordinary relation rules without differential-specific syntax; and
 - the runtime may expose settled relation and catalogue changes through existing mailbox
   capabilities without making the relation kernel depend on runtime values.
 
@@ -310,8 +309,8 @@ reference counts.
 - Adding mailbox subscription builtins in the first kernel implementation stage.
 - Incrementally executing opaque computed relation callbacks without an explicit change interface.
 - Sending every relation operation to the GPU.
-- Adding a `differential`, `materialized`, or `maintained` rule keyword before measured workloads show
-  that authors need to control maintenance policy.
+- Adding a `differential`, `materialized`, or `maintained` rule keyword before measured workloads
+  show that authors need to control maintenance policy.
 - Weakening rule, value, authority, or transaction semantics to make a physical backend eligible.
 
 ## Terminology
@@ -352,9 +351,8 @@ ReachableRoom(area, from, to) :-
 ```
 
 Rule bodies may contain positive atoms, safe negated atoms, and comparison guards. Rules are
-validated for stratified negation. Rule terms are variables or literal values. This subset is a
-good fit for differential maintenance because rule bodies do not execute arbitrary verbs or
-effects.
+validated for stratified negation. Rule terms are variables or literal values. This subset is a good
+fit for differential maintenance because rule bodies do not execute arbitrary verbs or effects.
 
 `crates/relation-kernel/src/rules.rs` currently:
 
@@ -415,11 +413,11 @@ Mica already has transactional mailbox delivery. `mailbox_send` records a pendin
 successful transaction boundary promotes it to a committed task effect; a retry or abort discards
 it. The task manager later delivers committed sends and the driver wakes mailbox receivers.
 
-Mailboxes are ephemeral runtime queues rather than authoritative relation facts. The current
-runtime has no subscription registry and does not route `Commit::changes` or catalogue changes to
-mailboxes. `Transaction::commit` returns a `CommitResult`, but the task commit boundary currently
-uses only success or failure. Subscription support must carry the settled commit batch across that
-boundary without making `mica-relation-kernel` depend on mailbox capabilities.
+Mailboxes are ephemeral runtime queues rather than authoritative relation facts. The current runtime
+has no subscription registry and does not route `Commit::changes` or catalogue changes to mailboxes.
+`Transaction::commit` returns a `CommitResult`, but the task commit boundary currently uses only
+success or failure. Subscription support must carry the settled commit batch across that boundary
+without making `mica-relation-kernel` depend on mailbox capabilities.
 
 ### Packed and accelerated execution
 
@@ -576,8 +574,8 @@ P(x) :- P(x)
 After removing `Seed(x)`, the second rule must not allow `P(x)` to support itself forever. Similar
 cycles occur naturally in reachability over cyclic graphs.
 
-The implementation uses a proven incremental fixpoint formulation. The formulation is
-differential iteration:
+The implementation uses a proven incremental fixpoint formulation. The formulation is differential
+iteration:
 
 - retain signed changes by epoch and iteration;
 - feed only changes around the recursive loop;
@@ -586,10 +584,10 @@ differential iteration:
   independently permanent reference; and
 - advance the output frontier only after feedback is quiescent.
 
-The complete evaluator remains the correctness oracle until randomized cyclic insertion and
-deletion sequences demonstrate equivalence. If a native differential iteration proves too complex
-or memory-heavy, a deletion algorithm such as DRed is a valid alternative, but the two approaches
-must not be mixed informally.
+The complete evaluator remains the correctness oracle until randomized cyclic insertion and deletion
+sequences demonstrate equivalence. If a native differential iteration proves too complex or
+memory-heavy, a deletion algorithm such as DRed is a valid alternative, but the two approaches must
+not be mixed informally.
 
 ## Kernel Architecture
 
@@ -606,8 +604,8 @@ Compile the active rule set into one maintained program containing:
 - physical eligibility information for tuple, packed, parallel, and accelerator execution; and
 - a stable identity derived from active rule definitions and relevant relation metadata.
 
-The current rule compiler and physical query plan are inputs to this work. The design should converge
-on one internal operator vocabulary instead of adding a parallel public rule API.
+The current rule compiler and physical query plan are inputs to this work. The design should
+converge on one internal operator vocabulary instead of adding a parallel public rule API.
 
 ### Weighted changes
 
@@ -629,8 +627,8 @@ The exact Rust layout should follow measurement. Requirements are:
 - preservation of Mica `Value` ownership and equality semantics; and
 - a packed form that keeps tuple columns separate from differences.
 
-Weights should not be represented as ordinary Mica relation columns. Doing so would confuse
-logical arity, projection, canonical ordering, and persistence.
+Weights should not be represented as ordinary Mica relation columns. Doing so would confuse logical
+arity, projection, canonical ordering, and persistence.
 
 ### Traces and arrangements
 
@@ -709,8 +707,8 @@ compatibility machinery.
 `ComputedRelation::scan` is an opaque callback. The kernel cannot infer its changes from
 `FactChange`, and some providers may perform external or dynamically calculated work.
 
-A compiled rule dependency on a computed relation is therefore a maintenance barrier. Initially,
-the affected rule component uses complete evaluation. A future provider may opt into incremental
+A compiled rule dependency on a computed relation is therefore a maintenance barrier. Initially, the
+affected rule component uses complete evaluation. A future provider may opt into incremental
 maintenance by exposing:
 
 - a stable collection identity;
@@ -821,8 +819,8 @@ A later experiment may add GPU buffers for signed differences and operators for 
 and distinct. That should happen only after the CPU-owned weighted path demonstrates representative
 workloads where row-pair readback or CPU consolidation dominates.
 
-GPU-side weights are not necessary to establish correct incremental maintenance and should not
-delay the first implementation.
+GPU-side weights are not necessary to establish correct incremental maintenance and should not delay
+the first implementation.
 
 ## Persistence And Recovery
 
@@ -832,8 +830,8 @@ Authoritative commits continue to persist:
 - rule catalogue changes; and
 - effective durable base fact assertions and retractions.
 
-Derived tuples, arrangements, encoded GPU columns, progress frontiers, and trace compaction state are
-not durable in the first implementation.
+Derived tuples, arrangements, encoded GPU columns, progress frontiers, and trace compaction state
+are not durable in the first implementation.
 
 Recovery proceeds as follows:
 
@@ -911,21 +909,21 @@ definitions or rule syntax.
 
 ## Mailbox Change Subscriptions
 
-Differential maintenance makes efficient subscriptions to rule-derived results practical. It is
-not required for every kind of change feed, however, and the public semantics must distinguish
-three sources:
+Differential maintenance makes efficient subscriptions to rule-derived results practical. It is not
+required for every kind of change feed, however, and the public semantics must distinguish three
+sources:
 
-| Subscription subject | Source | Meaning |
-| --- | --- | --- |
-| Authoritative fact changes | Existing `Commit::changes` | Effective committed assertions and retractions of stored facts |
-| Catalogue changes | Existing `Commit::catalog_changes` | Relation creation, rule installation, and rule disabling |
-| Public relation-result changes | Settled visible-change batch | Tuples whose public set membership became true or false after all affected rules settled |
+| Subscription subject           | Source                             | Meaning                                                                                  |
+| ------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| Authoritative fact changes     | Existing `Commit::changes`         | Effective committed assertions and retractions of stored facts                           |
+| Catalogue changes              | Existing `Commit::catalog_changes` | Relation creation, rule installation, and rule disabling                                 |
+| Public relation-result changes | Settled visible-change batch       | Tuples whose public set membership became true or false after all affected rules settled |
 
 "Changes to a rule" can therefore mean two different things. A consumer interested in rule
-definitions subscribes to catalogue changes. A consumer interested in conclusions produced by
-rules subscribes to the affected head relation. The latter observes the consolidated relation
-result, not proof provenance or the contribution of one particular rule. Mica should not expose
-rule-specific proof changes until it has an explicit provenance model.
+definitions subscribes to catalogue changes. A consumer interested in conclusions produced by rules
+subscribes to the affected head relation. The latter observes the consolidated relation result, not
+proof provenance or the contribution of one particular rule. Mica should not expose rule-specific
+proof changes until it has an explicit provenance model.
 
 ### Activation and scope
 
@@ -936,8 +934,8 @@ that component to become cold under the normal eviction policy.
 
 Subscriptions to authoritative fact changes or catalogue changes can be implemented from existing
 commit data and do not themselves require differential execution. Subscriptions to derived results
-require either differential visible changes or a complete recompute-and-diff fallback. The latter
-is correct but should be used only for cold, unsupported, or rebuilding components.
+require either differential visible changes or a complete recompute-and-diff fallback. The latter is
+correct but should be used only for cold, unsupported, or rebuilding components.
 
 The first relation-result filter should match the kernel's existing scan shape: one relation and
 zero or more bound columns. This has predictable index requirements and authority scope. Arbitrary
@@ -999,8 +997,8 @@ SettledCommitChanges
 
 `relation_changes` contains public zero-crossings after extensional and derived contributions have
 been combined. For example, retracting an authoritative fact does not emit a public relation
-retraction if an active rule still derives the same tuple. Internal weights, proof counts,
-fixpoint iterations, and operator changes are never placed in mailbox messages.
+retraction if an active rule still derives the same tuple. Internal weights, proof counts, fixpoint
+iterations, and operator changes are never placed in mailbox messages.
 
 The runtime filters this kernel batch for each subscription and enqueues one message containing all
 matching changes for the committed version. It should not send one mailbox message per tuple. A
@@ -1026,13 +1024,13 @@ apply authoritative changes
   -> wake receivers
 ```
 
-No subscriber may observe intermediate recursive iterations, a partially rebuilt rule component,
-or changes from a transaction that later aborts or retries. A task with more than one successful
-commit boundary must publish each boundary's batch; publication cannot wait for a later terminal
-task outcome and combine distinct committed versions.
+No subscriber may observe intermediate recursive iterations, a partially rebuilt rule component, or
+changes from a transaction that later aborts or retries. A task with more than one successful commit
+boundary must publish each boundary's batch; publication cannot wait for a later terminal task
+outcome and combine distinct committed versions.
 
-Mailbox FIFO order should preserve increasing cursors for each subscription. A receiver reacts in
-a later task and transaction. Its writes may create another committed version and another change
+Mailbox FIFO order should preserve increasing cursors for each subscription. A receiver reacts in a
+later task and transaction. Its writes may create another committed version and another change
 batch, but mailbox handling must never execute re-entrantly inside the originating commit or
 differential fixpoint.
 
@@ -1043,9 +1041,9 @@ permission to read a relation. Subscription registration must check relation rea
 requested pattern. Delivery must use refreshed session or principal authority rather than retaining
 an `AuthorityContext` indefinitely across policy changes.
 
-Filtering occurs before values enter the mailbox queue. If refreshed authority no longer permits
-the subscription, the runtime must stop data delivery and either close the subscription or enqueue
-a non-sensitive revocation marker. It must not reveal the existence, cardinality, or values of
+Filtering occurs before values enter the mailbox queue. If refreshed authority no longer permits the
+subscription, the runtime must stop data delivery and either close the subscription or enqueue a
+non-sensitive revocation marker. It must not reveal the existence, cardinality, or values of
 unauthorized changes.
 
 ### Backpressure, durability, and recovery
@@ -1055,11 +1053,11 @@ or exactly-once delivery across process failure. Recovery-critical commands, aud
 external-effect outboxes must remain committed relation facts or use another durable log.
 
 Each subscription has an explicit queue budget. The initial implementation applies it both to the
-number of undrained version batches and to the number of entries in one batch. When a subscriber falls behind, the
-runtime should replace undelivered incremental batches with a single resynchronization marker
-containing the latest safe cursor. Silently dropping a change or allowing unbounded mailbox growth
-is not acceptable. Coalescing across versions is valid only for a separately specified
-latest-state mode because it removes observable intermediate transitions.
+number of undrained version batches and to the number of entries in one batch. When a subscriber
+falls behind, the runtime should replace undelivered incremental batches with a single
+resynchronization marker containing the latest safe cursor. Silently dropping a change or allowing
+unbounded mailbox growth is not acceptable. Coalescing across versions is valid only for a
+separately specified latest-state mode because it removes observable intermediate transitions.
 
 Subscriptions are ephemeral. After restart or mailbox loss, a client recreates its mailbox,
 re-authorizes, reads a fresh snapshot or supplies a retained cursor, and resumes. Cursor-based
@@ -1151,9 +1149,9 @@ submission, readback, materialization, and consolidation.
 consolidated changes and showed a 5.8--7.9x improvement for the raw packed equality join on the
 GB10. It did not improve committed differential maintenance by the required 20 percent. After
 unchanged maintained collections were changed to share immutable roots, a 4,096-row delta against
-258,048 full rows took 9.2 ms through native arrangements and 10.8 ms through warm `wgpu`.
-One- and two-column workloads with 4,096- and 65,536-row deltas were either slower through `wgpu`
-or effectively tied. The current delivery therefore keeps arranged differential probing native by
+258,048 full rows took 9.2 ms through native arrangements and 10.8 ms through warm `wgpu`. One- and
+two-column workloads with 4,096- and 65,536-row deltas were either slower through `wgpu` or
+effectively tied. The current delivery therefore keeps arranged differential probing native by
 default. Weighted packed acceleration remains an explicit execution-context opt-in so its
 correctness and hardware path stay testable. The end-to-end performance part of this exit criterion
 was deferred to Stage 8, where resident device state could change the cost boundary rather than
@@ -1201,23 +1199,23 @@ Consider only after synchronous maintenance is correct and measured:
 
 Each is an independent optimization, not a requirement for the core design.
 
-**Implementation decision, 2026-07-19:** Stage 8 added an independently keyed resident
-right-side GPU arrangement for supported immediate-value equality joins. Changing delta columns no
-longer forces the immutable full side to be encoded and sorted again. Cache hit and miss counters,
-GPU operator time, and cache evidence are included in the committed-maintenance benchmark.
+**Implementation decision, 2026-07-19:** Stage 8 added an independently keyed resident right-side
+GPU arrangement for supported immediate-value equality joins. Changing delta columns no longer
+forces the immutable full side to be encoded and sorted again. Cache hit and miss counters, GPU
+operator time, and cache evidence are included in the committed-maintenance benchmark.
 
 The resident arrangement removed the previous warm-cache penalty but did not justify GPU placement
 for committed maintenance on the GB10. For a 4,096-row delta joining 258,048 full rows with one key
 column and one result per delta row, native assertion commits had a 9.653 ms median and resident
 `wgpu` assertion commits had a 10.350 ms median, or 0.933x native performance. The measured GPU
 operator averaged 0.529 ms with 18 right-side cache hits and no misses during the sampled warm
-commits. Increasing the full side to 2,097,152 rows reduced warm `wgpu` performance to 0.830x native.
-A two-column, zero-match case reached 0.920x. These measurements include commit publication,
+commits. Increasing the full side to 2,097,152 rows reduced warm `wgpu` performance to 0.830x
+native. A two-column, zero-match case reached 0.920x. These measurements include commit publication,
 weighted materialization, and consolidation.
 
 The same benchmark found and corrected a quadratic settled-change merge introduced with Stage 7.
-Sorting and deduplicating the authoritative and derived change streams restored the approximately
-9 ms native baseline without changing public zero-crossing semantics.
+Sorting and deduplicating the authoritative and derived change streams restored the approximately 9
+ms native baseline without changing public zero-crossing semantics.
 
 Native arrangements therefore remain the default, and weighted GPU maintenance remains an explicit
 execution-context opt-in. GPU-side weight arithmetic and consolidation are not added: the resident
@@ -1228,9 +1226,9 @@ The other Stage 8 options remain deferred independently:
 
 - synchronous maintenance has correct publication semantics and no measured catch-up requirement;
   background work first needs a concrete latency workload and exact-version wait contract;
-- traces already compact after eight delta batches or when delta bytes reach one quarter of the
-  base and export retained-byte metrics; a global eviction budget first needs consumer pin and
-  unpin accounting plus a measured memory limit;
+- traces already compact after eight delta batches or when delta bytes reach one quarter of the base
+  and export retained-byte metrics; a global eviction budget first needs consumer pin and unpin
+  accounting plus a measured memory limit;
 - authoritative recovery and complete recomputation remain correct, with no restart measurement
   justifying the validation and compatibility surface of persisted trace checkpoints; and
 - computed relation providers have no committed change-stream contract from which incremental
@@ -1286,8 +1284,8 @@ Subscription tests must additionally cover:
 
 ### Randomized testing
 
-Generate small relation schemas, safe rule programs from supported shapes, and sequences of valid set
-assertions and retractions. After each commit:
+Generate small relation schemas, safe rule programs from supported shapes, and sequences of valid
+set assertions and retractions. After each commit:
 
 1. settle incremental output;
 2. recompute from the authoritative snapshot;
@@ -1423,8 +1421,8 @@ Mitigations:
 ## Open Decisions And Recommended Defaults
 
 These are physical and operational decisions rather than changes to Datalog truth. The design needs
-initial answers so that the first implementation has one coherent shape, but measurements may
-change thresholds and retention limits later.
+initial answers so that the first implementation has one coherent shape, but measurements may change
+thresholds and retention limits later.
 
 ### 1. Scope and eviction of warm maintained state
 
@@ -1441,9 +1439,9 @@ isolated SCC.
 
 **Recommendation:** Compile the active rule program once per catalogue identity, but own traces,
 arrangements, output, memory accounting, and eviction independently per dependency component. A
-consumer of relation `R` acquires a lease on the component containing `R` and the transitive upstream
-components required to produce it. Multiple queries and subscriptions share those leases. An SCC is
-never partially warm or partially evicted.
+consumer of relation `R` acquires a lease on the component containing `R` and the transitive
+upstream components required to produce it. Multiple queries and subscriptions share those leases.
+An SCC is never partially warm or partially evicted.
 
 An ordinary read may warm a component for reuse. A live subscription pins it. When the final lease
 is released, the state becomes evictable under the memory budget; it need not be destroyed
@@ -1457,11 +1455,10 @@ duplicated upstream state cost more than the unrelated maintenance work they avo
 
 ### 2. Synchronous maintenance on commit
 
-**What is at stake:** Synchronous maintenance gives the simplest exact publication rule: version
-`V` is not visible until its authoritative and derived states agree. It also adds work to the
-serialized commit section. A large recursive deletion, high-fanout join, GPU submission, or complete
-fallback can therefore increase tail latency for every writer waiting on the current kernel commit
-lock.
+**What is at stake:** Synchronous maintenance gives the simplest exact publication rule: version `V`
+is not visible until its authoritative and derived states agree. It also adds work to the serialized
+commit section. A large recursive deletion, high-fanout join, GPU submission, or complete fallback
+can therefore increase tail latency for every writer waiting on the current kernel commit lock.
 
 Asynchronous maintenance shortens the authoritative commit path but introduces a lagging derived
 version, wait-or-fallback behaviour on reads, subscription progress tracking, shutdown handling, and
@@ -1469,8 +1466,8 @@ failure recovery. It is not merely moving the same function to another thread.
 
 **Recommendation:** Implement synchronous maintenance first. Run it after conflict validation and
 before persistence and snapshot publication, advance only affected warm components, and publish
-nothing if maintenance fails. Keep the accelerator's decline-without-waiting admission behaviour;
-an occupied device must fall back to native execution rather than stall a commit waiting for GPU
+nothing if maintenance fails. Keep the accelerator's decline-without-waiting admission behaviour; an
+occupied device must fall back to native execution rather than stall a commit waiting for GPU
 capacity.
 
 Record maintenance duration separately from persistence and base snapshot construction, including
@@ -1523,9 +1520,9 @@ settled public output remains a separate `RelationState`, updated only by zero-c
 snapshot scans continue to use the existing store and indexes.
 
 **Initial default:** Store tuple rows plus checked `i64` differences. Build only arrangements named
-by the compiled program. Build packed columns lazily for immediate-only batches and share them
-with `wgpu`. Do not put differences into `Tuple`, add weights to the authoritative ART, or require
-every trace batch to carry row and column copies.
+by the compiled program. Build packed columns lazily for immediate-only batches and share them with
+`wgpu`. Do not put differences into `Tuple`, add weights to the authoritative ART, or require every
+trace batch to carry row and column copies.
 
 ### 4. Historical time retained by traces
 
@@ -1564,8 +1561,8 @@ system.
 
 The current `CommitHistory` is an unbounded linked history reachable from the newest snapshot. It is
 useful current machinery but should not define the subscription service-level guarantee. In
-particular, authoritative commits may be recoverable from a provider while the corresponding
-settled derived-change batches are not persisted.
+particular, authoritative commits may be recoverable from a provider while the corresponding settled
+derived-change batches are not persisted.
 
 **Recommendation:** Give the runtime a separate, shared, bounded replay buffer of settled commit
 batches. Starting defaults should retain at most:
@@ -1613,8 +1610,8 @@ their own atomic snapshot handoff.
 
 **What is at stake:** The current mailbox store uses unbounded `VecDeque<Value>` queues. Sending one
 batch per version without accounting lets a stalled subscriber consume unbounded memory. Blocking a
-commit until the receiver drains would couple database progress to arbitrary application code.
-Very small limits, however, turn ordinary short pauses into repeated full resynchronization.
+commit until the receiver drains would couple database progress to arbitrary application code. Very
+small limits, however, turn ordinary short pauses into repeated full resynchronization.
 
 **Recommendation:** Add subscription-aware accounting before placing a change message into the
 mailbox queue. A queued subscription entry needs internal subscription identity and an approximate
@@ -1630,9 +1627,9 @@ Use these starting limits:
 - 64 MiB of uniquely retained subscription backlog for the runtime.
 
 Crossing either per-subscription limit removes that subscription's undelivered incremental entries
-and leaves one `ResyncRequired` marker at the newest safe cursor. A single batch larger than the byte
-limit immediately produces the same marker. Crossing the global limit applies this policy first to
-the largest or oldest stalled backlog. Commits never wait for queue capacity.
+and leaves one `ResyncRequired` marker at the newest safe cursor. A single batch larger than the
+byte limit immediately produces the same marker. Crossing the global limit applies this policy first
+to the largest or oldest stalled backlog. Commits never wait for queue capacity.
 
 **Initial default:** The limits are runtime configuration with the values above as guardrails, not
 language-level knobs. Export queue entries, logical bytes, shared retained bytes, age of oldest
@@ -1705,9 +1702,9 @@ identity and arrangement columns. Benchmark a matrix rather than one crossover p
 **Measured initial default:** Retain native arranged probing for committed differential work. Keep
 the conservative 262,144/4,096 floor and removal of the extreme-unbalance shortcut in the explicit
 weighted-acceleration path used by tests and benchmarks. Do not enable that path by default until
-Stage 8 measurements show at least a 20 percent median advantage over native execution without a
-p95 regression. Keep admission adaptive to device occupancy: a busy or unavailable accelerator
-declines immediately and does not affect correctness.
+Stage 8 measurements show at least a 20 percent median advantage over native execution without a p95
+regression. Keep admission adaptive to device occupancy: a busy or unavailable accelerator declines
+immediately and does not affect correctness.
 
 ## Expected Code Boundaries
 
@@ -1717,8 +1714,8 @@ Implementation should preserve the existing crate responsibilities:
 - `crates/relation-kernel/src/rules.rs`: logical rule compilation and complete-evaluator oracle;
 - `crates/relation-kernel`: maintained program, weighted changes, traces, arrangements, progress,
   snapshot integration, and native fallback;
-- `crates/relation-kernel/src/query.rs` and `batch.rs`: shared physical operators and weighted packed
-  execution;
+- `crates/relation-kernel/src/query.rs` and `batch.rs`: shared physical operators and weighted
+  packed execution;
 - `crates/relation-wgpu`: optional large-operator acceleration only;
 - `crates/runtime`: supply execution context and admission policy and, in the optional subscription
   stage, own registration, authority refresh, filtering, queue budgets, and mailbox conversion;
@@ -1731,7 +1728,7 @@ hierarchy before non-recursive maintenance reveals the stable boundary.
 
 ## References
 
-- Frank McSherry, Derek Murray, Rebecca Isaacs, and Michael Isard, *Differential Dataflow*, CIDR
+- Frank McSherry, Derek Murray, Rebecca Isaacs, and Michael Isard, _Differential Dataflow_, CIDR
   2013: <https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf>
 - Differential Dataflow book, introduction:
   <https://timelydataflow.github.io/differential-dataflow/>
@@ -1741,7 +1738,8 @@ hierarchy before non-recursive maintenance reveals the stable boundary.
   <https://timelydataflow.github.io/differential-dataflow/chapter_5/chapter_5.html>
 - DDlog project overview and language/runtime boundary:
   <https://github.com/vmware-archive/differential-datalog>
-- Current Mica rule evaluator: [`crates/relation-kernel/src/rules.rs`](../crates/relation-kernel/src/rules.rs)
+- Current Mica rule evaluator:
+  [`crates/relation-kernel/src/rules.rs`](../crates/relation-kernel/src/rules.rs)
 - Current snapshot-derived cache:
   [`crates/relation-kernel/src/snapshot.rs`](../crates/relation-kernel/src/snapshot.rs)
 - Current transaction commit changes:
@@ -1749,7 +1747,8 @@ hierarchy before non-recursive maintenance reveals the stable boundary.
 - Current transactional mailbox sends: [`crates/runtime/src/task.rs`](../crates/runtime/src/task.rs)
 - Current mailbox delivery:
   [`crates/runtime/src/task_manager.rs`](../crates/runtime/src/task_manager.rs)
-- Current packed operators: [`crates/relation-kernel/src/batch.rs`](../crates/relation-kernel/src/batch.rs)
+- Current packed operators:
+  [`crates/relation-kernel/src/batch.rs`](../crates/relation-kernel/src/batch.rs)
 - Current accelerator contract:
   [`crates/relation-kernel/src/execution.rs`](../crates/relation-kernel/src/execution.rs)
 - Current Vulkan-backed accelerator:
