@@ -12,13 +12,15 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{
-    Atom, Commit, ComputedRelation, ComputedRelationRead, ExecutionContext, FactChangeKind,
-    InMemoryCommitProvider, KernelError, RelationId, RelationKernel, RelationMetadata, Rule,
-    RuleBodyItem, RuleComparisonOp, RuleGuard, RuleSet, Term, Tuple,
+    AccelerationDecline, AccelerationOutcome, Atom, Commit, ComputedRelation, ComputedRelationRead,
+    EqualityJoin, EqualityJoinMatch, ExecutionContext, FactChangeKind, InMemoryCommitProvider,
+    KernelError, MembershipSelection, RelationAccelerator, RelationId, RelationKernel,
+    RelationMetadata, Rule, RuleBodyItem, RuleComparisonOp, RuleGuard, RuleSet, Term, Tuple,
 };
 use mica_var::{Identity, Symbol, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 fn rel(id: u64) -> RelationId {
@@ -875,6 +877,98 @@ fn immutable_trace_batches_compact_without_changing_old_snapshots() {
         before_compaction.scan(rel(481), &[None]).unwrap().len(),
         1_007
     );
+}
+
+struct PrefixJoinAccelerator {
+    calls: AtomicUsize,
+}
+
+impl RelationAccelerator for PrefixJoinAccelerator {
+    fn select_membership(
+        &self,
+        _selection: MembershipSelection<'_>,
+    ) -> AccelerationOutcome<Vec<usize>> {
+        AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput)
+    }
+
+    fn join_equality(&self, join: EqualityJoin<'_>) -> AccelerationOutcome<Vec<EqualityJoinMatch>> {
+        self.calls.fetch_add(1, AtomicOrdering::Relaxed);
+        assert_eq!(join.left.len(), 1);
+        assert_eq!(join.right.len(), 1);
+        assert!(join.right[0].len() >= join.left[0].len());
+        assert!(
+            join.left[0]
+                .iter()
+                .zip(join.right[0].iter())
+                .all(|(left, right)| left == right)
+        );
+        AccelerationOutcome::Completed(
+            (0..join.left[0].len())
+                .map(|row| EqualityJoinMatch {
+                    left_row: row,
+                    right_row: row,
+                })
+                .collect(),
+        )
+    }
+}
+
+#[test]
+#[ignore = "large weighted packed maintenance placement"]
+fn configured_accelerator_executes_large_weighted_trace_join() {
+    let accelerator = Arc::new(PrefixJoinAccelerator {
+        calls: AtomicUsize::new(0),
+    });
+    let kernel = RelationKernel::new().with_execution_context(
+        ExecutionContext::serial()
+            .with_accelerator(accelerator.clone())
+            .with_weighted_join_acceleration(),
+    );
+    create_relations(
+        &kernel,
+        &[(550, "Left", 2), (551, "Right", 2), (552, "Joined", 2)],
+    );
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(552),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(550), [var("from"), var("key")]),
+                    Atom::positive(rel(551), [var("key"), var("to")]),
+                ],
+            ),
+            "Joined(from, to) :- Left(from, key), Right(key, to)",
+        )
+        .unwrap();
+    let mut seed = kernel.begin();
+    for key in 0..258_048_i64 {
+        seed.assert(rel(550), Tuple::from([int(key), int(key)]))
+            .unwrap();
+    }
+    seed.commit().unwrap();
+    assert!(
+        kernel
+            .snapshot()
+            .scan(rel(552), &[None, None])
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut tx = kernel.begin();
+    for key in 0..4_096_i64 {
+        tx.assert(rel(551), Tuple::from([int(key), int(key + 1_000_000)]))
+            .unwrap();
+    }
+    tx.commit().unwrap();
+    let rows = kernel.snapshot().scan(rel(552), &[None, None]).unwrap();
+    assert_eq!(rows.len(), 4_096);
+    assert_eq!(rows.first(), Some(&Tuple::from([int(0), int(1_000_000)])));
+    assert_eq!(
+        rows.last(),
+        Some(&Tuple::from([int(4_095), int(1_004_095)]))
+    );
+    assert_eq!(accelerator.calls.load(AtomicOrdering::Relaxed), 1);
 }
 
 struct ConstantComputed;

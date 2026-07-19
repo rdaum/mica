@@ -34,6 +34,8 @@ const PACKED_ROW_THRESHOLD: usize = 256;
 const ACCELERATOR_EQUALITY_JOIN_ROW_THRESHOLD: usize = 262_144;
 const ACCELERATOR_EQUALITY_JOIN_UNBALANCED_ROW_THRESHOLD: usize = 2_097_152;
 const ACCELERATOR_EQUALITY_JOIN_MIN_SIDE_ROWS: usize = 4_096;
+const DIFFERENTIAL_EQUALITY_JOIN_ROW_THRESHOLD: usize = 262_144;
+const DIFFERENTIAL_EQUALITY_JOIN_MIN_DELTA_ROWS: usize = 4_096;
 const ACCELERATOR_MEMBERSHIP_ROW_THRESHOLD: usize = 262_144;
 const PARALLEL_MEMBERSHIP_ROW_THRESHOLD: usize = 1_048_576;
 const PARALLEL_MEMBERSHIP_WORKERS: NonZeroUsize = NonZeroUsize::new(1).unwrap();
@@ -962,6 +964,147 @@ fn join(
     Some(output)
 }
 
+pub(crate) fn execute_differential_equality_join(
+    delta: &crate::PackedRelation,
+    full: &crate::PackedRelation,
+    delta_positions: &[u16],
+    full_positions: &[u16],
+    execution_context: &ExecutionContext,
+) -> Option<Vec<EqualityJoinMatch>> {
+    execute_differential_equality_join_with_thresholds(
+        delta,
+        full,
+        delta_positions,
+        full_positions,
+        execution_context,
+        DIFFERENTIAL_EQUALITY_JOIN_ROW_THRESHOLD,
+        DIFFERENTIAL_EQUALITY_JOIN_MIN_DELTA_ROWS,
+    )
+}
+
+fn execute_differential_equality_join_with_thresholds(
+    delta: &crate::PackedRelation,
+    full: &crate::PackedRelation,
+    delta_positions: &[u16],
+    full_positions: &[u16],
+    execution_context: &ExecutionContext,
+    row_threshold: usize,
+    min_delta_rows: usize,
+) -> Option<Vec<EqualityJoinMatch>> {
+    if delta_positions.len() != full_positions.len() || !matches!(delta_positions.len(), 1 | 2) {
+        return None;
+    }
+    let input_rows = delta.row_count().saturating_add(full.row_count());
+    record_equality_join_input_rows(input_rows);
+    if delta.row_count().saturating_add(full.row_count()) < row_threshold
+        || delta.row_count() < min_delta_rows
+    {
+        record_equality_join_acceleration_placement(
+            EqualityJoinAccelerationPlacement::BelowThreshold,
+        );
+        return None;
+    }
+    if !execution_context.has_accelerator() {
+        record_equality_join_acceleration_placement(EqualityJoinAccelerationPlacement::Unavailable);
+        return None;
+    }
+    let delta_columns = delta_positions
+        .iter()
+        .map(|position| delta.columns().get(*position as usize).cloned())
+        .collect::<Option<Vec<_>>>()?;
+    let full_columns = full_positions
+        .iter()
+        .map(|position| full.columns().get(*position as usize).cloned())
+        .collect::<Option<Vec<_>>>()?;
+    let started = Instant::now();
+    match execution_context.join_equality(EqualityJoin {
+        left: &delta_columns,
+        right: &full_columns,
+    }) {
+        AccelerationOutcome::Completed(matches)
+            if equality_join_matches_are_valid(&matches, delta.row_count(), full.row_count()) =>
+        {
+            record_equality_join_acceleration_placement(
+                EqualityJoinAccelerationPlacement::Accelerated,
+            );
+            record_equality_join_acceleration_duration(started.elapsed());
+            record_equality_join_output_rows(matches.len());
+            Some(matches)
+        }
+        AccelerationOutcome::Completed(_) => {
+            record_equality_join_acceleration_placement(
+                EqualityJoinAccelerationPlacement::InvalidResult,
+            );
+            None
+        }
+        AccelerationOutcome::Declined(decline) => {
+            record_equality_join_acceleration_placement(match decline {
+                AccelerationDecline::Busy => EqualityJoinAccelerationPlacement::Busy,
+                AccelerationDecline::UnsupportedInput => {
+                    EqualityJoinAccelerationPlacement::UnsupportedInput
+                }
+                AccelerationDecline::UnsupportedDomain => {
+                    EqualityJoinAccelerationPlacement::UnsupportedDomain
+                }
+                AccelerationDecline::Unavailable => EqualityJoinAccelerationPlacement::Unavailable,
+                AccelerationDecline::Failed => EqualityJoinAccelerationPlacement::Failed,
+            });
+            None
+        }
+    }
+}
+
+pub(crate) fn differential_equality_join_eligible(delta_rows: usize, full_rows: usize) -> bool {
+    delta_rows >= DIFFERENTIAL_EQUALITY_JOIN_MIN_DELTA_ROWS
+        && delta_rows.saturating_add(full_rows) >= DIFFERENTIAL_EQUALITY_JOIN_ROW_THRESHOLD
+}
+
+pub(crate) fn execute_native_equality_join_matches(
+    left: &crate::PackedRelation,
+    right: &crate::PackedRelation,
+    left_positions: &[u16],
+    right_positions: &[u16],
+) -> Option<Vec<EqualityJoinMatch>> {
+    if left_positions.len() != right_positions.len() || !matches!(left_positions.len(), 1 | 2) {
+        return None;
+    }
+    let mut right_index = BTreeMap::<PackedKey, Vec<usize>>::new();
+    for right_row in 0..right.row_count() {
+        right_index
+            .entry(packed_relation_key(right, right_row, right_positions)?)
+            .or_default()
+            .push(right_row);
+    }
+    let mut matches = Vec::new();
+    for left_row in 0..left.row_count() {
+        let key = packed_relation_key(left, left_row, left_positions)?;
+        if let Some(right_rows) = right_index.get(&key) {
+            matches.extend(right_rows.iter().map(|right_row| EqualityJoinMatch {
+                left_row,
+                right_row: *right_row,
+            }));
+        }
+    }
+    Some(matches)
+}
+
+fn packed_relation_key(
+    relation: &crate::PackedRelation,
+    row: usize,
+    positions: &[u16],
+) -> Option<PackedKey> {
+    match positions {
+        [one] => Some(PackedKey::One(
+            relation.columns().get(*one as usize)?.get(row)?.clone(),
+        )),
+        [one, two] => Some(PackedKey::Two(
+            relation.columns().get(*one as usize)?.get(row)?.clone(),
+            relation.columns().get(*two as usize)?.get(row)?.clone(),
+        )),
+        _ => None,
+    }
+}
+
 fn place_accelerated_equality_join(
     left: &NativeBatch,
     right: &NativeBatch,
@@ -1877,6 +2020,49 @@ mod tests {
             ]
         );
         assert_eq!(accelerator.join_calls.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[test]
+    fn differential_join_preserves_duplicate_contributions_before_consolidation() {
+        let delta = crate::PackedRelation::from_canonical_tuples(
+            vec![Tuple::from([int(1)]), Tuple::from([int(1)])],
+            1,
+        )
+        .unwrap();
+        let full = crate::PackedRelation::from_canonical_tuples(
+            vec![Tuple::from([int(1)]), Tuple::from([int(1)])],
+            1,
+        )
+        .unwrap();
+        let expected = execute_native_equality_join_matches(&delta, &full, &[0], &[0]).unwrap();
+        assert_eq!(expected.len(), 4);
+
+        let accelerator = Arc::new(TestAccelerator {
+            membership_calls: AtomicUsize::new(0),
+            selected: Vec::new(),
+            join_calls: AtomicUsize::new(0),
+            join_matches: expected.clone(),
+        });
+        let context = ExecutionContext::serial().with_accelerator(accelerator.clone());
+        let accelerated = execute_differential_equality_join_with_thresholds(
+            &delta,
+            &full,
+            &[0],
+            &[0],
+            &context,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(accelerated, expected);
+        assert_eq!(accelerator.join_calls.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[test]
+    fn differential_join_requires_a_large_changing_side() {
+        assert!(!differential_equality_join_eligible(1, 2_097_152));
+        assert!(!differential_equality_join_eligible(4_095, 258_049));
+        assert!(differential_equality_join_eligible(4_096, 258_048));
     }
 
     #[test]

@@ -83,6 +83,7 @@ pub trait RelationAccelerator: Send + Sync {
 pub struct ExecutionContext {
     parallel: Option<Arc<ParallelExecution>>,
     accelerator: Option<Arc<dyn RelationAccelerator>>,
+    weighted_join_acceleration: bool,
 }
 
 impl ExecutionContext {
@@ -90,6 +91,7 @@ impl ExecutionContext {
         Self {
             parallel: None,
             accelerator: None,
+            weighted_join_acceleration: false,
         }
     }
 
@@ -105,6 +107,7 @@ impl ExecutionContext {
                 pool: OnceLock::new(),
             })),
             accelerator: None,
+            weighted_join_acceleration: false,
         }
     }
 
@@ -113,8 +116,21 @@ impl ExecutionContext {
         self
     }
 
+    /// Enables packed weighted equality joins for differential maintenance.
+    ///
+    /// This is an explicit placement-policy opt-in. Configuring an accelerator alone does not move
+    /// arranged delta/full probes away from the native path.
+    pub fn with_weighted_join_acceleration(mut self) -> Self {
+        self.weighted_join_acceleration = true;
+        self
+    }
+
     pub(crate) fn has_accelerator(&self) -> bool {
         self.accelerator.is_some()
+    }
+
+    pub(crate) fn accelerates_weighted_joins(&self) -> bool {
+        self.weighted_join_acceleration && self.has_accelerator()
     }
 
     pub(crate) fn select_membership(
@@ -186,6 +202,10 @@ impl fmt::Debug for ExecutionContext {
                     .is_some_and(|parallel| parallel.pool.get().is_some()),
             )
             .field("accelerator", &self.accelerator.is_some())
+            .field(
+                "weighted_join_acceleration",
+                &self.weighted_join_acceleration,
+            )
             .finish()
     }
 }
@@ -240,6 +260,24 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    struct DecliningAccelerator;
+
+    impl RelationAccelerator for DecliningAccelerator {
+        fn select_membership(
+            &self,
+            _selection: MembershipSelection<'_>,
+        ) -> AccelerationOutcome<Vec<usize>> {
+            AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput)
+        }
+
+        fn join_equality(
+            &self,
+            _join: EqualityJoin<'_>,
+        ) -> AccelerationOutcome<Vec<EqualityJoinMatch>> {
+            AccelerationOutcome::Declined(AccelerationDecline::UnsupportedInput)
+        }
+    }
+
     struct FixedAdmission {
         capacity: NonZeroUsize,
         available: Mutex<usize>,
@@ -277,6 +315,16 @@ mod tests {
             ExecutionContext::serial().try_join(NonZeroUsize::new(2).unwrap(), || 1, || 2,),
             Err(ParallelUnavailable::NoExecutor)
         );
+    }
+
+    #[test]
+    fn weighted_join_acceleration_requires_explicit_placement_opt_in() {
+        let accelerator = Arc::new(DecliningAccelerator);
+        let default = ExecutionContext::serial().with_accelerator(accelerator.clone());
+        assert!(!default.accelerates_weighted_joins());
+
+        let opted_in = default.with_weighted_join_acceleration();
+        assert!(opted_in.accelerates_weighted_joins());
     }
 
     #[test]

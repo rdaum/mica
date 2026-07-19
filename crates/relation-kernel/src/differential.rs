@@ -17,16 +17,19 @@ use crate::rules::{
 };
 use crate::snapshot::active_rules;
 use crate::{
-    FactChange, FactChangeKind, KernelError, RelationId, RuleSet, Snapshot, Tuple, Version,
+    ExecutionContext, FactChange, FactChangeKind, KernelError, RelationId, RuleSet, Snapshot,
+    Tuple, Version,
 };
 use mica_var::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub(crate) type Diff = i64;
 type WeightedRows = BTreeMap<Tuple, Diff>;
 type Binding = Vec<Option<Value>>;
 type WeightedBindings = BTreeMap<Binding, Diff>;
+type Collection = Arc<BTreeSet<Tuple>>;
+type Collections = BTreeMap<RelationId, Collection>;
 const TRACE_COMPACTION_BATCHES: usize = 8;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -119,6 +122,13 @@ struct TraceBatch {
     rows: Arc<[Tuple]>,
     differences: Arc<[Diff]>,
     retained_bytes: usize,
+    packed: OnceLock<Option<WeightedPackedBatch>>,
+}
+
+#[derive(Clone, Debug)]
+struct WeightedPackedBatch {
+    rows: Arc<crate::PackedRelation>,
+    differences: Arc<[Diff]>,
 }
 
 impl TraceBatch {
@@ -140,11 +150,28 @@ impl TraceBatch {
             rows: rows.into(),
             differences: differences.into(),
             retained_bytes,
+            packed: OnceLock::new(),
         }
     }
 
     fn from_set(epoch: Version, rows: &BTreeSet<Tuple>) -> Self {
         Self::from_rows(epoch, rows.iter().cloned().map(|tuple| (tuple, 1)))
+    }
+
+    fn packed(&self) -> Option<&WeightedPackedBatch> {
+        self.packed
+            .get_or_init(|| {
+                let arity = self.rows.first()?.arity();
+                let rows = crate::PackedRelation::from_shared_canonical_tuples(
+                    Arc::clone(&self.rows),
+                    arity,
+                )?;
+                Some(WeightedPackedBatch {
+                    rows: Arc::new(rows),
+                    differences: Arc::clone(&self.differences),
+                })
+            })
+            .as_ref()
     }
 }
 
@@ -210,6 +237,10 @@ impl Trace {
                 })
                 .sum::<usize>()
     }
+
+    fn batches(&self) -> impl Iterator<Item = &TraceBatch> {
+        std::iter::once(self.base.as_ref()).chain(self.batches.iter().map(AsRef::as_ref))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -223,7 +254,7 @@ pub(crate) struct MaintainedState {
     version: Version,
     program: Arc<MaintainedProgram>,
     requested_targets: BTreeSet<RelationId>,
-    collections: BTreeMap<RelationId, BTreeSet<Tuple>>,
+    collections: Collections,
     derived_support: BTreeMap<RelationId, WeightedRows>,
     negated_rules: BTreeMap<(usize, usize), NegatedRuleState>,
     negative_key_counts: BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
@@ -246,7 +277,7 @@ impl MaintainedState {
         let program = Arc::new(program);
         let mut collections = BTreeMap::new();
         for relation in &program.relations {
-            collections.insert(*relation, extensional_rows(snapshot, *relation)?);
+            collections.insert(*relation, Arc::new(extensional_rows(snapshot, *relation)?));
         }
         let mut derived_support = BTreeMap::new();
         let mut negated_rules = BTreeMap::new();
@@ -261,10 +292,12 @@ impl MaintainedState {
                         .into_iter()
                         .collect::<BTreeSet<_>>();
                     let support = derived.iter().cloned().map(|tuple| (tuple, 1)).collect();
-                    collections
-                        .get_mut(target)
-                        .expect("recursive target should have a maintained collection")
-                        .extend(derived);
+                    Arc::make_mut(
+                        collections
+                            .get_mut(target)
+                            .expect("recursive target should have a maintained collection"),
+                    )
+                    .extend(derived);
                     derived_support.insert(*target, support);
                 }
                 continue;
@@ -291,10 +324,12 @@ impl MaintainedState {
             }
             ensure_non_negative(&support, target, snapshot.version())?;
             let derived = positive_rows(&support);
-            collections
-                .get_mut(&target)
-                .expect("rule target should have a maintained collection")
-                .extend(derived);
+            Arc::make_mut(
+                collections
+                    .get_mut(&target)
+                    .expect("rule target should have a maintained collection"),
+            )
+            .extend(derived);
             derived_support.insert(target, support);
         }
 
@@ -339,6 +374,7 @@ impl MaintainedState {
         current: &Snapshot,
         next: &Snapshot,
         fact_changes: &[FactChange],
+        execution_context: &ExecutionContext,
     ) -> Result<Arc<Self>, KernelError> {
         debug_assert_eq!(self.version, current.version());
         let version = next.version();
@@ -359,7 +395,11 @@ impl MaintainedState {
                 continue;
             }
             let old_support = self.derived_support.get(relation);
-            let collection = collections.entry(*relation).or_default();
+            let collection = Arc::make_mut(
+                collections
+                    .entry(*relation)
+                    .or_insert_with(|| Arc::new(BTreeSet::new())),
+            );
             let deltas = relation_deltas.entry(*relation).or_default();
             for change in changes {
                 let old_visible = collection.contains(&change.tuple);
@@ -412,6 +452,7 @@ impl MaintainedState {
                         relation_deltas: &mut relation_deltas,
                         negative_key_counts: &mut negative_key_counts,
                         work: &mut work,
+                        execution_context,
                     },
                 )?;
                 continue;
@@ -426,8 +467,10 @@ impl MaintainedState {
                     relation_deltas: &relation_deltas,
                     old_arrangements: &self.arrangements,
                     new_arrangements: &arrangements,
+                    old_traces: Some(&self.traces),
                     target,
                     version,
+                    execution_context,
                 };
                 for (rule_index, rule) in component.rules.iter().enumerate() {
                     let contribution = if has_negation(rule) {
@@ -473,7 +516,11 @@ impl MaintainedState {
             if let Some(changes) = changed_by_relation.get(&target) {
                 touched.extend(changes.iter().map(|change| change.tuple.clone()));
             }
-            let collection = collections.entry(target).or_default();
+            let collection = Arc::make_mut(
+                collections
+                    .entry(target)
+                    .or_insert_with(|| Arc::new(BTreeSet::new())),
+            );
             let deltas = relation_deltas.entry(target).or_default();
             for tuple in touched {
                 let old_visible = self
@@ -755,7 +802,7 @@ fn required_arrangements(rule: &CompiledRule) -> BTreeSet<ArrangementSpec> {
 
 fn build_arrangements(
     specs: &BTreeSet<ArrangementSpec>,
-    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    collections: &Collections,
 ) -> BTreeMap<ArrangementSpec, Arc<Arrangement>> {
     specs
         .iter()
@@ -817,7 +864,7 @@ fn has_negation(rule: &CompiledRule) -> bool {
 
 fn evaluate_rule_full(
     rule: &CompiledRule,
-    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    collections: &Collections,
     version: Version,
     work: &mut MaintenanceWork,
 ) -> Result<(WeightedRows, Option<NegatedRuleState>), KernelError> {
@@ -847,13 +894,15 @@ fn evaluate_rule_full(
 }
 
 struct DeltaEvaluation<'a> {
-    old_collections: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
-    new_collections: &'a BTreeMap<RelationId, BTreeSet<Tuple>>,
+    old_collections: &'a Collections,
+    new_collections: &'a Collections,
     relation_deltas: &'a BTreeMap<RelationId, WeightedRows>,
     old_arrangements: &'a BTreeMap<ArrangementSpec, Arc<Arrangement>>,
     new_arrangements: &'a BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    old_traces: Option<&'a BTreeMap<RelationId, Trace>>,
     target: RelationId,
     version: Version,
+    execution_context: &'a ExecutionContext,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -871,12 +920,13 @@ struct RecursiveAdvance<'a> {
     current: &'a MaintainedState,
     next: &'a Snapshot,
     fact_changes: &'a BTreeMap<RelationId, Vec<&'a FactChange>>,
-    collections: &'a mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    collections: &'a mut Collections,
     derived_support: &'a mut BTreeMap<RelationId, WeightedRows>,
     arrangements: &'a mut BTreeMap<ArrangementSpec, Arc<Arrangement>>,
     relation_deltas: &'a mut BTreeMap<RelationId, WeightedRows>,
     negative_key_counts: &'a mut BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
     work: &'a mut MaintenanceWork,
+    execution_context: &'a ExecutionContext,
 }
 
 fn advance_recursive_component(
@@ -933,7 +983,7 @@ fn advance_recursive_component(
             .collect::<BTreeSet<_>>();
         let mut visible = extensional_rows(advance.next, *target)?;
         visible.extend(remaining.iter().cloned());
-        settled.insert(*target, visible);
+        settled.insert(*target, Arc::new(visible));
         next_derived.insert(*target, remaining);
     }
 
@@ -977,8 +1027,10 @@ fn advance_recursive_component(
             relation_deltas: &seed_deltas,
             old_arrangements: &advance.current.arrangements,
             new_arrangements: &settled_arrangements,
+            old_traces: None,
             target: *component.targets.first().unwrap(),
             version,
+            execution_context: advance.execution_context,
         };
         recursive_delta_candidates(component, &evaluation, &next_derived, advance.work)?
     };
@@ -1016,9 +1068,11 @@ fn advance_recursive_component(
         let old_settled = settled.clone();
         let old_arrangements = settled_arrangements.clone();
         for (relation, changes) in &settled_frontier.changes {
-            let rows = settled
-                .get_mut(relation)
-                .expect("recursive target should have a settled collection");
+            let rows = Arc::make_mut(
+                settled
+                    .get_mut(relation)
+                    .expect("recursive target should have a settled collection"),
+            );
             rows.extend(changes.keys().cloned());
             next_derived
                 .get_mut(relation)
@@ -1032,8 +1086,10 @@ fn advance_recursive_component(
             relation_deltas: &settled_frontier.changes,
             old_arrangements: &old_arrangements,
             new_arrangements: &settled_arrangements,
+            old_traces: None,
             target: *component.targets.first().unwrap(),
             version,
+            execution_context: advance.execution_context,
         };
         frontier = recursive_delta_candidates(component, &evaluation, &next_derived, advance.work)?;
         iteration = settled_frontier.time.iteration + 1;
@@ -1046,11 +1102,14 @@ fn advance_recursive_component(
             .cloned()
             .map(|tuple| (tuple, 1))
             .collect::<WeightedRows>();
-        let next_rows = settled.remove(target).unwrap_or_default();
+        let next_rows = settled
+            .remove(target)
+            .map(Arc::unwrap_or_clone)
+            .unwrap_or_default();
         let changes = set_difference_changes(&advance.current.collections[target], &next_rows);
         advance.work.consolidated_changes += changes.len();
         advance.derived_support.insert(*target, support);
-        advance.collections.insert(*target, next_rows);
+        advance.collections.insert(*target, Arc::new(next_rows));
         reset_relation_arrangements(advance.arrangements, &advance.current.arrangements, *target);
         update_arrangements(advance.arrangements, *target, &changes);
         advance.relation_deltas.insert(*target, changes.clone());
@@ -1111,9 +1170,11 @@ fn overdelete_recursive_derivations(
         let mut next_collections = collections.clone();
         let mut next_arrangements = arrangements.clone();
         for (relation, changes) in &frontier {
-            let rows = next_collections
-                .get_mut(relation)
-                .expect("recursive dependency should have a maintained collection");
+            let rows = Arc::make_mut(
+                next_collections
+                    .get_mut(relation)
+                    .expect("recursive dependency should have a maintained collection"),
+            );
             for tuple in changes.keys() {
                 rows.remove(tuple);
             }
@@ -1128,8 +1189,10 @@ fn overdelete_recursive_derivations(
                 relation_deltas: &frontier,
                 old_arrangements: &arrangements,
                 new_arrangements: &next_arrangements,
+                old_traces: None,
                 target: rule.head_relation,
                 version: advance.next.version(),
+                execution_context: advance.execution_context,
             };
             let bindings = evaluate_positive_binding_delta(rule, &evaluation, advance.work)?;
             let bindings = filter_active_negated_bindings(rule, bindings, &collections)?;
@@ -1162,7 +1225,7 @@ fn overdelete_recursive_derivations(
 
 fn recursive_full_candidates(
     component: &MaintainedComponent,
-    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    collections: &Collections,
     derived: &BTreeMap<RelationId, BTreeSet<Tuple>>,
     version: Version,
     work: &mut MaintenanceWork,
@@ -1196,8 +1259,10 @@ fn recursive_delta_candidates(
             relation_deltas: sources.relation_deltas,
             old_arrangements: sources.old_arrangements,
             new_arrangements: sources.new_arrangements,
+            old_traces: sources.old_traces,
             target: rule.head_relation,
             version: sources.version,
+            execution_context: sources.execution_context,
         };
         let bindings = evaluate_positive_binding_delta(rule, &evaluation, work)?;
         let bindings = filter_active_negated_bindings(rule, bindings, sources.new_collections)?;
@@ -1217,7 +1282,7 @@ fn recursive_delta_candidates(
 fn filter_active_negated_bindings(
     rule: &CompiledRule,
     bindings: WeightedBindings,
-    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    collections: &Collections,
 ) -> Result<WeightedBindings, KernelError> {
     if !has_negation(rule) {
         return Ok(bindings);
@@ -1235,8 +1300,8 @@ fn filter_active_negated_bindings(
 
 fn collection_differences(
     relations: impl IntoIterator<Item = RelationId>,
-    old: &BTreeMap<RelationId, BTreeSet<Tuple>>,
-    new: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    old: &Collections,
+    new: &Collections,
 ) -> BTreeMap<RelationId, WeightedRows> {
     relations
         .into_iter()
@@ -1311,13 +1376,17 @@ fn evaluate_positive_binding_delta(
                 std::cmp::Ordering::Less => join_arranged(
                     bindings,
                     atom,
-                    evaluation
-                        .new_collections
-                        .get(&atom.relation)
-                        .expect("compiled relation should have a maintained collection"),
-                    evaluation.new_arrangements,
-                    evaluation.target,
-                    evaluation.version,
+                    FullJoinInput {
+                        rows: evaluation
+                            .new_collections
+                            .get(&atom.relation)
+                            .expect("compiled relation should have a maintained collection"),
+                        arrangements: evaluation.new_arrangements,
+                        trace: None,
+                        target: evaluation.target,
+                        version: evaluation.version,
+                        execution_context: evaluation.execution_context,
+                    },
                     work,
                 )?,
                 std::cmp::Ordering::Equal => join_weighted(
@@ -1331,13 +1400,19 @@ fn evaluate_positive_binding_delta(
                 std::cmp::Ordering::Greater => join_arranged(
                     bindings,
                     atom,
-                    evaluation
-                        .old_collections
-                        .get(&atom.relation)
-                        .expect("compiled relation should have a maintained collection"),
-                    evaluation.old_arrangements,
-                    evaluation.target,
-                    evaluation.version,
+                    FullJoinInput {
+                        rows: evaluation
+                            .old_collections
+                            .get(&atom.relation)
+                            .expect("compiled relation should have a maintained collection"),
+                        arrangements: evaluation.old_arrangements,
+                        trace: evaluation
+                            .old_traces
+                            .and_then(|traces| traces.get(&atom.relation)),
+                        target: evaluation.target,
+                        version: evaluation.version,
+                        execution_context: evaluation.execution_context,
+                    },
                     work,
                 )?,
             };
@@ -1541,15 +1616,140 @@ fn join_weighted(
     )
 }
 
+fn join_weighted_trace(
+    bindings: &WeightedBindings,
+    atom: &CompiledAtom,
+    trace: &Trace,
+    target: RelationId,
+    version: Version,
+    execution_context: &ExecutionContext,
+    work: &mut MaintenanceWork,
+) -> Result<Option<WeightedBindings>, KernelError> {
+    if bindings.is_empty() {
+        return Ok(Some(WeightedBindings::new()));
+    }
+    if !execution_context.accelerates_weighted_joins() {
+        return Ok(None);
+    }
+    let mut positions = None;
+    let mut binding_entries = Vec::with_capacity(bindings.len());
+    let mut key_rows = Vec::with_capacity(bindings.len());
+    for (binding, difference) in bindings {
+        let Some((binding_positions, key)) = arrangement_binding_key(atom, binding) else {
+            return Ok(None);
+        };
+        if !matches!(binding_positions.len(), 1 | 2)
+            || key.iter().any(|value| !value.is_immediate())
+            || positions
+                .as_ref()
+                .is_some_and(|positions| positions != &binding_positions)
+        {
+            return Ok(None);
+        }
+        positions = Some(binding_positions);
+        binding_entries.push((binding, *difference));
+        key_rows.push(Tuple::new(key));
+    }
+    let positions = positions.unwrap();
+    let delta_positions = (0..positions.len() as u16).collect::<Vec<_>>();
+    let Some(delta) = crate::PackedRelation::from_canonical_tuples(key_rows, positions.len())
+    else {
+        return Ok(None);
+    };
+    let packed_batches = trace
+        .batches()
+        .filter(|batch| !batch.rows.is_empty())
+        .map(|batch| batch.packed().map(|packed| (batch, packed)))
+        .collect::<Option<Vec<_>>>();
+    let Some(packed_batches) = packed_batches else {
+        return Ok(None);
+    };
+    let Some(accelerated_batch) = packed_batches.iter().position(|(_, packed)| {
+        crate::batch::differential_equality_join_eligible(
+            delta.row_count(),
+            packed.rows.row_count(),
+        )
+    }) else {
+        return Ok(None);
+    };
+
+    let mut output = WeightedBindings::new();
+    for (batch_index, (batch, packed)) in packed_batches.into_iter().enumerate() {
+        let matches = if batch_index == accelerated_batch {
+            let Some(matches) = crate::batch::execute_differential_equality_join(
+                &delta,
+                &packed.rows,
+                &delta_positions,
+                &positions,
+                execution_context,
+            ) else {
+                return Ok(None);
+            };
+            matches
+        } else {
+            crate::batch::execute_native_equality_join_matches(
+                &delta,
+                &packed.rows,
+                &delta_positions,
+                &positions,
+            )
+            .expect("validated packed trace keys should support a native join")
+        };
+        work.rows_visited = work.rows_visited.saturating_add(matches.len());
+        for pair in matches {
+            let (binding, binding_difference) = binding_entries[pair.left_row];
+            let tuple = &batch.rows[pair.right_row];
+            let Some(next) = unify(atom, binding, tuple) else {
+                continue;
+            };
+            let difference = checked_multiply(
+                binding_difference,
+                packed.differences[pair.right_row],
+                target,
+                "packed join",
+                version,
+            )?;
+            checked_accumulate(
+                &mut output,
+                next,
+                difference,
+                target,
+                "packed join",
+                version,
+            )?;
+        }
+    }
+    Ok(Some(output))
+}
+
+struct FullJoinInput<'a> {
+    rows: &'a BTreeSet<Tuple>,
+    arrangements: &'a BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    trace: Option<&'a Trace>,
+    target: RelationId,
+    version: Version,
+    execution_context: &'a ExecutionContext,
+}
+
 fn join_arranged(
     bindings: WeightedBindings,
     atom: &CompiledAtom,
-    rows: &BTreeSet<Tuple>,
-    arrangements: &BTreeMap<ArrangementSpec, Arc<Arrangement>>,
-    target: RelationId,
-    version: Version,
+    input: FullJoinInput<'_>,
     work: &mut MaintenanceWork,
 ) -> Result<WeightedBindings, KernelError> {
+    if let Some(trace) = input.trace
+        && let Some(output) = join_weighted_trace(
+            &bindings,
+            atom,
+            trace,
+            input.target,
+            input.version,
+            input.execution_context,
+            work,
+        )?
+    {
+        return Ok(output);
+    }
     let mut output = WeightedBindings::new();
     for (binding, binding_difference) in bindings {
         let key = arrangement_binding_key(atom, &binding);
@@ -1558,7 +1758,8 @@ fn join_arranged(
                 relation: atom.relation,
                 positions: positions.clone(),
             };
-            arrangements
+            input
+                .arrangements
                 .get(&spec)
                 .map(|arrangement| arrangement.lookup(key))
         });
@@ -1571,19 +1772,19 @@ fn join_arranged(
                 &binding,
                 binding_difference,
                 candidates.iter(),
-                target,
-                version,
+                input.target,
+                input.version,
             )?;
         } else {
-            work.rows_visited = work.rows_visited.saturating_add(rows.len());
+            work.rows_visited = work.rows_visited.saturating_add(input.rows.len());
             join_candidates(
                 &mut output,
                 atom,
                 &binding,
                 binding_difference,
-                rows.iter(),
-                target,
-                version,
+                input.rows.iter(),
+                input.target,
+                input.version,
             )?;
         }
     }
@@ -2059,5 +2260,21 @@ mod tests {
                 support: -1,
             }
         );
+    }
+
+    #[test]
+    fn weighted_trace_batch_reuses_packed_columns_and_keeps_differences() {
+        let batch = TraceBatch::from_rows(
+            20,
+            [
+                (Tuple::from([Value::int(1).unwrap()]), 3),
+                (Tuple::from([Value::int(2).unwrap()]), -1),
+            ],
+        );
+        let first = batch.packed().unwrap();
+        let second = batch.packed().unwrap();
+        assert!(Arc::ptr_eq(&first.rows, &second.rows));
+        assert_eq!(first.rows.rows(), batch.rows.as_ref());
+        assert_eq!(first.differences.as_ref(), &[3, -1]);
     }
 }

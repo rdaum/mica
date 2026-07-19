@@ -1002,7 +1002,8 @@ impl<'a> Transaction<'a> {
         next.method_program_cache = empty_method_program_cache();
         if let Some(maintained) = current.maintained_state() {
             let maintenance_start = Instant::now();
-            let maintained = maintained.advance(current, &next, &changes)?;
+            let maintained =
+                maintained.advance(current, &next, &changes, &self.execution_context)?;
             let derived = maintained.build_derived_relations(&next)?;
             crate::metrics::record_differential_maintenance(
                 maintenance_start.elapsed(),

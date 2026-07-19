@@ -67,13 +67,17 @@ impl PackedRelation {
     }
 
     pub fn from_canonical_tuples(rows: Vec<Tuple>, arity: usize) -> Option<Self> {
+        Self::from_shared_canonical_tuples(rows.into(), arity)
+    }
+
+    pub(crate) fn from_shared_canonical_tuples(rows: Arc<[Tuple]>, arity: usize) -> Option<Self> {
         if arity == 0 {
             return None;
         }
         let mut columns = (0..arity)
             .map(|_| Vec::with_capacity(rows.len()))
             .collect::<Vec<_>>();
-        for tuple in &rows {
+        for tuple in rows.iter() {
             if tuple.arity() != arity || tuple.values().iter().any(|value| !value.is_immediate()) {
                 return None;
             }
@@ -88,7 +92,7 @@ impl PackedRelation {
                 .map(Arc::<[Value]>::from)
                 .collect::<Vec<_>>()
                 .into(),
-            rows: rows.into(),
+            rows,
         })
     }
 
