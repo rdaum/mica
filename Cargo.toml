@@ -66,8 +66,8 @@ cranelift-module = { version = "0.133.1", default-features = false, features = [
 cyper = { version = "0.8.0", default-features = false, features = ["native-tls", "stream"] }
 fast-telemetry = "0.8"
 fast-telemetry-export = { version = "0.8", default-features = false, features = ["compio"] }
-futures-util = "0.3"
 fjall = "3.1"
+futures-util = "0.3"
 h3-webtransport = "0.1.2"
 http = "1.4"
 httparse = "1.10"

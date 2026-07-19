@@ -10,9 +10,8 @@ durable provisional assistant message, and updates that message as typed respons
 Tool calls and results remain part of the transcript, and every request sends the complete relevant
 Mica-owned context instead of relying on provider-side response history. A Chat Completions adapter
 is available for providers without suitable Responses support. Read-only tools (`read`, `grep`,
-`glob`, `ls`) query the source-provider crate's
-computed relations. The source-provider also exposes syntax, symbol, definition, references, and VCS
-history as computed relations for future tools.
+`glob`, `ls`) query the source-provider crate's computed relations. The source-provider also exposes
+syntax, symbol, definition, references, and VCS history as computed relations for future tools.
 
 ## What It Demonstrates
 

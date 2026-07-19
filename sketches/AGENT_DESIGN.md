@@ -580,10 +580,10 @@ results are carried through the transcript for the next complete-state request.
 
 `apps/shared/llm.mica` now exposes Responses and Chat Completions stream adapters with one typed
 mailbox event vocabulary. The driver can deliver external stream events to a Mica mailbox, and the
-agent updates a durable provisional `MessageContent` in batches. Responses requests use `store:
-false`, resend the complete Mica-owned context, and preserve response output items needed for
-stateless reasoning and tool-call continuations. Browser updates remain ordinary subscription-driven
-DOM deltas.
+agent updates a durable provisional `MessageContent` in batches. Responses requests use
+`store: false`, resend the complete Mica-owned context, and preserve response output items needed
+for stateless reasoning and tool-call continuations. Browser updates remain ordinary
+subscription-driven DOM deltas.
 
 ### 7.4 Agent loop (implemented)
 
@@ -1147,8 +1147,8 @@ verbs over source-provider relations; streaming is revision-bump diffs through t
 
 ## 12. Staged Project Plan
 
-> Implementation note (July 2026): the early streaming stages below record the original plan and
-> are no longer authoritative. The implementation chose mailbox-based chunk delivery rather than
+> Implementation note (July 2026): the early streaming stages below record the original plan and are
+> no longer authoritative. The implementation chose mailbox-based chunk delivery rather than
 > host-side accumulation, uses Responses by default, retains Chat Completions as an explicit
 > provider adapter, and does not rely on `previous_response_id`. Continue current work from the
 > later agent-capability stages rather than reimplementing Stage 0.

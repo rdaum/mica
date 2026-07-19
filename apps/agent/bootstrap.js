@@ -618,7 +618,9 @@ function installAutoScroll(mount) {
                 ? lastChild
                 : lastChild?.querySelector?.("[data-raw-content]");
             const tailKey = lastChild
-                ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${rawContent?.dataset?.rawContent?.length ?? lastChild.textContent?.length ?? 0}`
+                ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${
+                    rawContent?.dataset?.rawContent?.length ?? lastChild.textContent?.length ?? 0
+                }`
                 : "";
             const prevKey = tailKeys.get(el) ?? "";
             if (tailKey && tailKey !== prevKey) {
