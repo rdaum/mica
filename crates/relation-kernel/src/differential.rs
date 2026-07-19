@@ -41,6 +41,8 @@ pub(crate) struct MaintenanceWork {
     pub(crate) trace_batches: usize,
     pub(crate) trace_bytes: usize,
     pub(crate) compaction_rows: usize,
+    pub(crate) recursive_iterations: usize,
+    pub(crate) frontier_rows: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -249,6 +251,25 @@ impl MaintainedState {
         let mut derived_support = BTreeMap::new();
         let mut negated_rules = BTreeMap::new();
         for (component_index, component) in program.components.iter().enumerate() {
+            if component.recursive {
+                for target in &component.targets {
+                    let derived = complete
+                        .get(target)
+                        .map(|state| state.scan(&vec![None; state.metadata().arity() as usize]))
+                        .transpose()?
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect::<BTreeSet<_>>();
+                    let support = derived.iter().cloned().map(|tuple| (tuple, 1)).collect();
+                    collections
+                        .get_mut(target)
+                        .expect("recursive target should have a maintained collection")
+                        .extend(derived);
+                    derived_support.insert(*target, support);
+                }
+                continue;
+            }
+            let target = component.target();
             let mut support = WeightedRows::new();
             for (rule_index, rule) in component.rules.iter().enumerate() {
                 let (contribution, negated) = evaluate_rule_full(
@@ -263,19 +284,18 @@ impl MaintainedState {
                 accumulate_rows(
                     &mut support,
                     contribution,
-                    component.target,
+                    target,
                     "rule union",
                     snapshot.version(),
                 )?;
             }
-            ensure_non_negative(&support, component.target, snapshot.version())?;
+            ensure_non_negative(&support, target, snapshot.version())?;
             let derived = positive_rows(&support);
-            let extensional = collections.remove(&component.target).unwrap_or_default();
-            collections.insert(
-                component.target,
-                extensional.union(&derived).cloned().collect(),
-            );
-            derived_support.insert(component.target, support);
+            collections
+                .get_mut(&target)
+                .expect("rule target should have a maintained collection")
+                .extend(derived);
+            derived_support.insert(target, support);
         }
 
         if !matches_complete_output(&program, &derived_support, complete) {
@@ -370,11 +390,33 @@ impl MaintainedState {
                         .is_some_and(|changes| !changes.is_empty())
                 })
             });
-            let target_changed = changed_by_relation.contains_key(&component.target);
+            let target_changed = component
+                .targets
+                .iter()
+                .any(|target| changed_by_relation.contains_key(target));
             if !body_changed && !target_changed {
                 continue;
             }
             work.affected_components += 1;
+
+            if component.recursive {
+                advance_recursive_component(
+                    component,
+                    RecursiveAdvance {
+                        current: self,
+                        next,
+                        fact_changes: &changed_by_relation,
+                        collections: &mut collections,
+                        derived_support: &mut derived_support,
+                        arrangements: &mut arrangements,
+                        relation_deltas: &mut relation_deltas,
+                        negative_key_counts: &mut negative_key_counts,
+                        work: &mut work,
+                    },
+                )?;
+                continue;
+            }
+            let target = component.target();
 
             let mut support_delta = WeightedRows::new();
             if body_changed {
@@ -384,7 +426,7 @@ impl MaintainedState {
                     relation_deltas: &relation_deltas,
                     old_arrangements: &self.arrangements,
                     new_arrangements: &arrangements,
-                    target: component.target,
+                    target,
                     version,
                 };
                 for (rule_index, rule) in component.rules.iter().enumerate() {
@@ -406,7 +448,7 @@ impl MaintainedState {
                     accumulate_rows(
                         &mut support_delta,
                         contribution,
-                        component.target,
+                        target,
                         "rule union",
                         version,
                     )?;
@@ -414,39 +456,39 @@ impl MaintainedState {
             }
             work.consolidated_changes += support_delta.len();
 
-            let support = derived_support.entry(component.target).or_default();
+            let support = derived_support.entry(target).or_default();
             for (tuple, difference) in &support_delta {
                 checked_accumulate(
                     support,
                     tuple.clone(),
                     *difference,
-                    component.target,
+                    target,
                     "head contribution",
                     version,
                 )?;
             }
-            ensure_non_negative(support, component.target, version)?;
+            ensure_non_negative(support, target, version)?;
 
             let mut touched = support_delta.keys().cloned().collect::<BTreeSet<_>>();
-            if let Some(changes) = changed_by_relation.get(&component.target) {
+            if let Some(changes) = changed_by_relation.get(&target) {
                 touched.extend(changes.iter().map(|change| change.tuple.clone()));
             }
-            let collection = collections.entry(component.target).or_default();
-            let deltas = relation_deltas.entry(component.target).or_default();
+            let collection = collections.entry(target).or_default();
+            let deltas = relation_deltas.entry(target).or_default();
             for tuple in touched {
                 let old_visible = self
                     .collections
-                    .get(&component.target)
+                    .get(&target)
                     .is_some_and(|rows| rows.contains(&tuple));
-                let new_visible = extensional_contains(next, component.target, &tuple)?
+                let new_visible = extensional_contains(next, target, &tuple)?
                     || support_is_positive(Some(support), &tuple);
                 set_presence_delta(collection, deltas, tuple, old_visible, new_visible);
             }
-            update_arrangements(&mut arrangements, component.target, deltas);
+            update_arrangements(&mut arrangements, target, deltas);
             refresh_negative_key_counts(
                 &mut negative_key_counts,
                 &self.negative_key_counts,
-                component.target,
+                target,
                 deltas,
             );
         }
@@ -612,17 +654,12 @@ impl MaintainedProgram {
                 if component.target_relations.is_disjoint(&required_targets) {
                     continue;
                 }
-                if !component.recursive_variants.is_empty() || component.target_relations.len() != 1
-                {
-                    return Ok(None);
-                }
-                let target = *component.target_relations.first().unwrap();
                 let rules = component
                     .rule_indices
                     .iter()
                     .map(|index| stratum.rules[*index].clone())
                     .collect::<Vec<_>>();
-                relations.insert(target);
+                relations.extend(component.target_relations.iter().copied());
                 relations.extend(rules.iter().flat_map(rule_atoms).map(|atom| atom.relation));
                 negative_relations.extend(
                     rules
@@ -630,7 +667,11 @@ impl MaintainedProgram {
                         .flat_map(negated_rule_atoms)
                         .map(|atom| atom.relation),
                 );
-                components.push(MaintainedComponent { target, rules });
+                components.push(MaintainedComponent {
+                    targets: component.target_relations.clone(),
+                    rules,
+                    recursive: !component.recursive_variants.is_empty(),
+                });
             }
         }
         for relation in &relations {
@@ -663,8 +704,16 @@ impl MaintainedProgram {
 
 #[derive(Clone, Debug)]
 struct MaintainedComponent {
-    target: RelationId,
+    targets: BTreeSet<RelationId>,
     rules: Vec<CompiledRule>,
+    recursive: bool,
+}
+
+impl MaintainedComponent {
+    fn target(&self) -> RelationId {
+        debug_assert_eq!(self.targets.len(), 1);
+        *self.targets.first().unwrap()
+    }
 }
 
 fn required_arrangements(rule: &CompiledRule) -> BTreeSet<ArrangementSpec> {
@@ -805,6 +854,419 @@ struct DeltaEvaluation<'a> {
     new_arrangements: &'a BTreeMap<ArrangementSpec, Arc<Arrangement>>,
     target: RelationId,
     version: Version,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct LogicalTime {
+    epoch: Version,
+    iteration: usize,
+}
+
+struct RecursiveFrontier {
+    time: LogicalTime,
+    changes: BTreeMap<RelationId, WeightedRows>,
+}
+
+struct RecursiveAdvance<'a> {
+    current: &'a MaintainedState,
+    next: &'a Snapshot,
+    fact_changes: &'a BTreeMap<RelationId, Vec<&'a FactChange>>,
+    collections: &'a mut BTreeMap<RelationId, BTreeSet<Tuple>>,
+    derived_support: &'a mut BTreeMap<RelationId, WeightedRows>,
+    arrangements: &'a mut BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    relation_deltas: &'a mut BTreeMap<RelationId, WeightedRows>,
+    negative_key_counts: &'a mut BTreeMap<RelationId, BTreeMap<Tuple, usize>>,
+    work: &'a mut MaintenanceWork,
+}
+
+fn advance_recursive_component(
+    component: &MaintainedComponent,
+    mut advance: RecursiveAdvance<'_>,
+) -> Result<(), KernelError> {
+    let version = advance.next.version();
+    let old_derived = component
+        .targets
+        .iter()
+        .map(|target| {
+            (
+                *target,
+                advance
+                    .current
+                    .derived_support
+                    .get(target)
+                    .map(positive_rows)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let target_seed_retracted = component.targets.iter().any(|target| {
+        advance.fact_changes.get(target).is_some_and(|changes| {
+            changes
+                .iter()
+                .any(|change| change.kind == FactChangeKind::Retract)
+        })
+    });
+    let negative_became_present = component
+        .rules
+        .iter()
+        .flat_map(negated_rule_atoms)
+        .any(|atom| {
+            advance
+                .relation_deltas
+                .get(&atom.relation)
+                .is_some_and(|changes| changes.values().any(|difference| *difference > 0))
+        });
+
+    let mut overdeleted = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
+    if target_seed_retracted || negative_became_present {
+        overdeleted.clone_from(&old_derived);
+    } else {
+        overdeleted = overdelete_recursive_derivations(component, &mut advance, &old_derived)?;
+    }
+
+    let mut next_derived = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
+    let mut settled = advance.collections.clone();
+    for target in &component.targets {
+        let remaining = old_derived[target]
+            .difference(overdeleted.get(target).unwrap_or(&BTreeSet::new()))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut visible = extensional_rows(advance.next, *target)?;
+        visible.extend(remaining.iter().cloned());
+        settled.insert(*target, visible);
+        next_derived.insert(*target, remaining);
+    }
+
+    let mut settled_arrangements = advance.arrangements.clone();
+    for target in &component.targets {
+        reset_relation_arrangements(
+            &mut settled_arrangements,
+            &advance.current.arrangements,
+            *target,
+        );
+        let changes =
+            set_difference_changes(&advance.current.collections[target], &settled[target]);
+        update_arrangements(&mut settled_arrangements, *target, &changes);
+    }
+    let needs_full_seed = overdeleted.values().any(|rows| !rows.is_empty())
+        || component
+            .rules
+            .iter()
+            .flat_map(negated_rule_atoms)
+            .any(|atom| {
+                advance
+                    .relation_deltas
+                    .get(&atom.relation)
+                    .is_some_and(|changes| !changes.is_empty())
+            });
+    let mut frontier = if needs_full_seed {
+        recursive_full_candidates(component, &settled, &next_derived, version, advance.work)?
+    } else {
+        let seed_deltas = collection_differences(
+            component
+                .rules
+                .iter()
+                .flat_map(positive_rule_atoms)
+                .map(|atom| atom.relation),
+            &advance.current.collections,
+            &settled,
+        );
+        let evaluation = DeltaEvaluation {
+            old_collections: &advance.current.collections,
+            new_collections: &settled,
+            relation_deltas: &seed_deltas,
+            old_arrangements: &advance.current.arrangements,
+            new_arrangements: &settled_arrangements,
+            target: *component.targets.first().unwrap(),
+            version,
+        };
+        recursive_delta_candidates(component, &evaluation, &next_derived, advance.work)?
+    };
+    let mut iteration = 0;
+    while frontier.values().any(|rows| !rows.is_empty()) {
+        let changes = frontier
+            .iter()
+            .map(|(relation, rows)| {
+                (
+                    *relation,
+                    rows.iter()
+                        .cloned()
+                        .map(|tuple| (tuple, 1))
+                        .collect::<WeightedRows>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let settled_frontier = RecursiveFrontier {
+            time: LogicalTime {
+                epoch: version,
+                iteration,
+            },
+            changes,
+        };
+        advance.work.recursive_iterations += 1;
+        advance.work.frontier_rows.push(
+            settled_frontier
+                .changes
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>(),
+        );
+        debug_assert_eq!(settled_frontier.time.epoch, version);
+
+        let old_settled = settled.clone();
+        let old_arrangements = settled_arrangements.clone();
+        for (relation, changes) in &settled_frontier.changes {
+            let rows = settled
+                .get_mut(relation)
+                .expect("recursive target should have a settled collection");
+            rows.extend(changes.keys().cloned());
+            next_derived
+                .get_mut(relation)
+                .expect("recursive target should have derived state")
+                .extend(changes.keys().cloned());
+            update_arrangements(&mut settled_arrangements, *relation, changes);
+        }
+        let evaluation = DeltaEvaluation {
+            old_collections: &old_settled,
+            new_collections: &settled,
+            relation_deltas: &settled_frontier.changes,
+            old_arrangements: &old_arrangements,
+            new_arrangements: &settled_arrangements,
+            target: *component.targets.first().unwrap(),
+            version,
+        };
+        frontier = recursive_delta_candidates(component, &evaluation, &next_derived, advance.work)?;
+        iteration = settled_frontier.time.iteration + 1;
+    }
+
+    for target in &component.targets {
+        let derived = next_derived.remove(target).unwrap_or_default();
+        let support = derived
+            .iter()
+            .cloned()
+            .map(|tuple| (tuple, 1))
+            .collect::<WeightedRows>();
+        let next_rows = settled.remove(target).unwrap_or_default();
+        let changes = set_difference_changes(&advance.current.collections[target], &next_rows);
+        advance.work.consolidated_changes += changes.len();
+        advance.derived_support.insert(*target, support);
+        advance.collections.insert(*target, next_rows);
+        reset_relation_arrangements(advance.arrangements, &advance.current.arrangements, *target);
+        update_arrangements(advance.arrangements, *target, &changes);
+        advance.relation_deltas.insert(*target, changes.clone());
+        refresh_negative_key_counts(
+            advance.negative_key_counts,
+            &advance.current.negative_key_counts,
+            *target,
+            &changes,
+        );
+    }
+    Ok(())
+}
+
+fn overdelete_recursive_derivations(
+    component: &MaintainedComponent,
+    advance: &mut RecursiveAdvance<'_>,
+    old_derived: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> Result<BTreeMap<RelationId, BTreeSet<Tuple>>, KernelError> {
+    let positive_relations = component
+        .rules
+        .iter()
+        .flat_map(positive_rule_atoms)
+        .map(|atom| atom.relation)
+        .collect::<BTreeSet<_>>();
+    let mut frontier = advance
+        .relation_deltas
+        .iter()
+        .filter(|(relation, _)| positive_relations.contains(relation))
+        .filter_map(|(relation, changes)| {
+            let retractions = changes
+                .iter()
+                .filter(|(_, difference)| **difference < 0)
+                .map(|(tuple, _)| (tuple.clone(), -1))
+                .collect::<WeightedRows>();
+            (!retractions.is_empty()).then_some((*relation, retractions))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut overdeleted = component
+        .targets
+        .iter()
+        .map(|target| (*target, BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut collections = advance.current.collections.clone();
+    let mut arrangements = advance.current.arrangements.clone();
+    let mut iteration = 0;
+    while frontier.values().any(|changes| !changes.is_empty()) {
+        advance.work.recursive_iterations += 1;
+        advance
+            .work
+            .frontier_rows
+            .push(frontier.values().map(BTreeMap::len).sum());
+        let time = LogicalTime {
+            epoch: advance.next.version(),
+            iteration,
+        };
+        debug_assert_eq!(time.epoch, advance.next.version());
+
+        let mut next_collections = collections.clone();
+        let mut next_arrangements = arrangements.clone();
+        for (relation, changes) in &frontier {
+            let rows = next_collections
+                .get_mut(relation)
+                .expect("recursive dependency should have a maintained collection");
+            for tuple in changes.keys() {
+                rows.remove(tuple);
+            }
+            update_arrangements(&mut next_arrangements, *relation, changes);
+        }
+
+        let mut next_frontier = BTreeMap::<RelationId, WeightedRows>::new();
+        for rule in &component.rules {
+            let evaluation = DeltaEvaluation {
+                old_collections: &collections,
+                new_collections: &next_collections,
+                relation_deltas: &frontier,
+                old_arrangements: &arrangements,
+                new_arrangements: &next_arrangements,
+                target: rule.head_relation,
+                version: advance.next.version(),
+            };
+            let bindings = evaluate_positive_binding_delta(rule, &evaluation, advance.work)?;
+            let bindings = filter_active_negated_bindings(rule, bindings, &collections)?;
+            let candidates = project_rule(rule, bindings, advance.next.version(), advance.work)?;
+            for (tuple, difference) in candidates {
+                if difference >= 0
+                    || !old_derived[&rule.head_relation].contains(&tuple)
+                    || !overdeleted
+                        .get_mut(&rule.head_relation)
+                        .expect("recursive head should have overdelete state")
+                        .insert(tuple.clone())
+                {
+                    continue;
+                }
+                if !extensional_contains(advance.next, rule.head_relation, &tuple)? {
+                    next_frontier
+                        .entry(rule.head_relation)
+                        .or_default()
+                        .insert(tuple, -1);
+                }
+            }
+        }
+        collections = next_collections;
+        arrangements = next_arrangements;
+        frontier = next_frontier;
+        iteration = time.iteration + 1;
+    }
+    Ok(overdeleted)
+}
+
+fn recursive_full_candidates(
+    component: &MaintainedComponent,
+    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    derived: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    version: Version,
+    work: &mut MaintenanceWork,
+) -> Result<BTreeMap<RelationId, BTreeSet<Tuple>>, KernelError> {
+    let mut frontier = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
+    for rule in &component.rules {
+        let (candidates, _) = evaluate_rule_full(rule, collections, version, work)?;
+        for (tuple, difference) in candidates {
+            if difference > 0 && !derived[&rule.head_relation].contains(&tuple) {
+                frontier
+                    .entry(rule.head_relation)
+                    .or_default()
+                    .insert(tuple);
+            }
+        }
+    }
+    Ok(frontier)
+}
+
+fn recursive_delta_candidates(
+    component: &MaintainedComponent,
+    sources: &DeltaEvaluation<'_>,
+    derived: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    work: &mut MaintenanceWork,
+) -> Result<BTreeMap<RelationId, BTreeSet<Tuple>>, KernelError> {
+    let mut frontier = BTreeMap::<RelationId, BTreeSet<Tuple>>::new();
+    for rule in &component.rules {
+        let evaluation = DeltaEvaluation {
+            old_collections: sources.old_collections,
+            new_collections: sources.new_collections,
+            relation_deltas: sources.relation_deltas,
+            old_arrangements: sources.old_arrangements,
+            new_arrangements: sources.new_arrangements,
+            target: rule.head_relation,
+            version: sources.version,
+        };
+        let bindings = evaluate_positive_binding_delta(rule, &evaluation, work)?;
+        let bindings = filter_active_negated_bindings(rule, bindings, sources.new_collections)?;
+        let candidates = project_rule(rule, bindings, sources.version, work)?;
+        for (tuple, difference) in candidates {
+            if difference > 0 && !derived[&rule.head_relation].contains(&tuple) {
+                frontier
+                    .entry(rule.head_relation)
+                    .or_default()
+                    .insert(tuple);
+            }
+        }
+    }
+    Ok(frontier)
+}
+
+fn filter_active_negated_bindings(
+    rule: &CompiledRule,
+    bindings: WeightedBindings,
+    collections: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> Result<WeightedBindings, KernelError> {
+    if !has_negation(rule) {
+        return Ok(bindings);
+    }
+    let mut active = WeightedBindings::new();
+    for (binding, difference) in bindings {
+        if negated_binding_is_active(rule, &binding, &|relation, tuple| {
+            collections[&relation].contains(tuple)
+        })? {
+            active.insert(binding, difference);
+        }
+    }
+    Ok(active)
+}
+
+fn collection_differences(
+    relations: impl IntoIterator<Item = RelationId>,
+    old: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+    new: &BTreeMap<RelationId, BTreeSet<Tuple>>,
+) -> BTreeMap<RelationId, WeightedRows> {
+    relations
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|relation| {
+            let changes = set_difference_changes(&old[&relation], &new[&relation]);
+            (!changes.is_empty()).then_some((relation, changes))
+        })
+        .collect()
+}
+
+fn set_difference_changes(old: &BTreeSet<Tuple>, new: &BTreeSet<Tuple>) -> WeightedRows {
+    old.difference(new)
+        .cloned()
+        .map(|tuple| (tuple, -1))
+        .chain(new.difference(old).cloned().map(|tuple| (tuple, 1)))
+        .collect()
+}
+
+fn reset_relation_arrangements(
+    arrangements: &mut BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    old_arrangements: &BTreeMap<ArrangementSpec, Arc<Arrangement>>,
+    relation: RelationId,
+) {
+    for (spec, old) in old_arrangements {
+        if spec.relation == relation {
+            arrangements.insert(spec.clone(), Arc::clone(old));
+        }
+    }
 }
 
 fn evaluate_rule_delta(
@@ -1518,21 +1980,23 @@ fn matches_complete_output(
     complete: &BTreeMap<RelationId, RelationState>,
 ) -> bool {
     program.components.iter().all(|component| {
-        let incremental = support
-            .get(&component.target)
-            .map(positive_rows)
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let complete = complete
-            .get(&component.target)
-            .map(|state| {
-                state
-                    .scan(&vec![None; state.metadata().arity() as usize])
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        incremental == complete
+        component.targets.iter().all(|target| {
+            let incremental = support
+                .get(target)
+                .map(positive_rows)
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let complete = complete
+                .get(target)
+                .map(|state| {
+                    state
+                        .scan(&vec![None; state.metadata().arity() as usize])
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            incremental == complete
+        })
     })
 }
 

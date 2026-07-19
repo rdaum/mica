@@ -213,6 +213,12 @@ pub struct RelationKernelMetrics {
     #[help = "Rows rewritten by differential trace compaction per maintenance pass"]
     pub differential_compaction_rows: Histogram,
 
+    #[help = "Recursive iterations per differential maintenance pass"]
+    pub differential_recursive_iterations: Histogram,
+
+    #[help = "Rows in each differential recursive frontier"]
+    pub differential_frontier_rows: Histogram,
+
     #[help = "Packed union execution placement decisions"]
     pub parallel_union_placements: LabeledCounter<ParallelUnionPlacement>,
 
@@ -305,6 +311,8 @@ impl RelationKernelMetrics {
             differential_trace_batches: Histogram::new(COUNT_BUCKETS, shard_count),
             differential_trace_bytes: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             differential_compaction_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_recursive_iterations: Histogram::new(COUNT_BUCKETS, shard_count),
+            differential_frontier_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             parallel_union_placements: LabeledCounter::new(shard_count),
             parallel_union_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             parallel_union_duration_us: Histogram::with_latency_buckets(shard_count),
@@ -512,6 +520,12 @@ pub(crate) fn record_differential_maintenance(
     metrics
         .differential_compaction_rows
         .record(work.compaction_rows as u64);
+    metrics
+        .differential_recursive_iterations
+        .record(work.recursive_iterations as u64);
+    for rows in &work.frontier_rows {
+        metrics.differential_frontier_rows.record(*rows as u64);
+    }
 }
 
 pub fn derived_relation_summaries(limit: usize) -> Vec<DerivedRelationSummary> {

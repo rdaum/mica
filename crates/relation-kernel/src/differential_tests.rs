@@ -932,7 +932,7 @@ fn unsupported_programs_and_dirty_transactions_use_complete_fallback() {
     assert_rows(&recursive, rel(420), &[(1, 2), (2, 3)]);
     let snapshot = recursive.snapshot();
     assert_eq!(snapshot.scan(rel(421), &[None, None]).unwrap().len(), 3);
-    assert!(snapshot.maintained_state().is_none());
+    assert!(snapshot.maintained_state().is_some());
 
     let negated = RelationKernel::new();
     create_relations(
@@ -1210,5 +1210,286 @@ fn stratified_negation_matches_randomized_positive_and_negative_changes() {
             visible_rows(&next, &relation_arities),
         );
         previous = next;
+    }
+}
+
+#[test]
+fn recursive_maintenance_matches_randomized_cyclic_graph_changes() {
+    let kernel = RelationKernel::new();
+    create_relations(&kernel, &[(510, "Edge", 2), (511, "Reachable", 2)]);
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(511),
+                [var("from"), var("to")],
+                [Atom::positive(rel(510), [var("from"), var("to")])],
+            ),
+            "Reachable(from, to) :- Edge(from, to)",
+        )
+        .unwrap();
+    kernel
+        .install_rule(
+            Rule::new(
+                rel(511),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(511), [var("from"), var("middle")]),
+                    Atom::positive(rel(510), [var("middle"), var("to")]),
+                ],
+            ),
+            "Reachable(from, to) :- Reachable(from, middle), Edge(middle, to)",
+        )
+        .unwrap();
+
+    let relation_arities = [(rel(510), 2), (rel(511), 2)];
+    let mut previous = kernel.snapshot();
+    assert!(previous.scan(rel(511), &[None, None]).unwrap().is_empty());
+    let retained_empty = Arc::clone(&previous);
+    let mut edges = BTreeSet::new();
+    let mut random = 0xa076_1d64_78bd_642f_u64;
+    for _ in 0..256 {
+        random = random
+            .wrapping_mul(2_862_933_555_777_941_757)
+            .wrapping_add(3_037_000_493);
+        let edge = (((random >> 8) % 6) as i64, ((random >> 24) % 6) as i64);
+        let tuple = Tuple::from([int(edge.0), int(edge.1)]);
+        let mut tx = kernel.begin();
+        if edges.remove(&edge) {
+            tx.retract(rel(510), tuple).unwrap();
+        } else {
+            edges.insert(edge);
+            tx.assert(rel(510), tuple).unwrap();
+        }
+        tx.commit().unwrap();
+
+        let next = kernel.snapshot();
+        assert_maintained_matches_complete(&next, &[(rel(511), 2)]);
+        assert_eq!(
+            apply_visible_changes(
+                visible_rows(&previous, &relation_arities),
+                next.maintained_state().unwrap().visible_changes(),
+            ),
+            visible_rows(&next, &relation_arities),
+        );
+        assert!(
+            next.maintained_state()
+                .unwrap()
+                .work()
+                .frontier_rows
+                .iter()
+                .all(|rows| *rows > 0)
+        );
+        previous = next;
+    }
+    assert!(
+        retained_empty
+            .scan(rel(511), &[None, None])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn recursive_retractions_remove_self_support_and_settle_mutual_recursion() {
+    let self_cycle = RelationKernel::new();
+    create_relations(&self_cycle, &[(520, "Seed", 1), (521, "Present", 1)]);
+    self_cycle
+        .install_rule(
+            Rule::new(
+                rel(521),
+                [var("value")],
+                [Atom::positive(rel(520), [var("value")])],
+            ),
+            "Present(value) :- Seed(value)",
+        )
+        .unwrap();
+    self_cycle
+        .install_rule(
+            Rule::new(
+                rel(521),
+                [var("value")],
+                [Atom::positive(rel(521), [var("value")])],
+            ),
+            "Present(value) :- Present(value)",
+        )
+        .unwrap();
+    let mut tx = self_cycle.begin();
+    tx.assert(rel(520), Tuple::from([int(7)])).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        self_cycle.snapshot().scan(rel(521), &[None]).unwrap(),
+        vec![Tuple::from([int(7)])]
+    );
+    let mut tx = self_cycle.begin();
+    tx.retract(rel(520), Tuple::from([int(7)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = self_cycle.snapshot();
+    assert!(snapshot.scan(rel(521), &[None]).unwrap().is_empty());
+    assert_maintained_matches_complete(&snapshot, &[(rel(521), 1)]);
+
+    let extensional_target = RelationKernel::new();
+    create_relations(&extensional_target, &[(522, "Loop", 1)]);
+    extensional_target
+        .install_rule(
+            Rule::new(
+                rel(522),
+                [var("value")],
+                [Atom::positive(rel(522), [var("value")])],
+            ),
+            "Loop(value) :- Loop(value)",
+        )
+        .unwrap();
+    let mut tx = extensional_target.begin();
+    tx.assert(rel(522), Tuple::from([int(8)])).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        extensional_target
+            .snapshot()
+            .scan(rel(522), &[None])
+            .unwrap(),
+        vec![Tuple::from([int(8)])]
+    );
+    let mut tx = extensional_target.begin();
+    tx.retract(rel(522), Tuple::from([int(8)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = extensional_target.snapshot();
+    assert!(snapshot.scan(rel(522), &[None]).unwrap().is_empty());
+    assert_maintained_matches_complete(&snapshot, &[(rel(522), 1)]);
+
+    let mutual = RelationKernel::new();
+    create_relations(
+        &mutual,
+        &[(523, "Seed", 1), (524, "Alpha", 1), (525, "Beta", 1)],
+    );
+    for (head, body, source) in [
+        (rel(524), rel(523), "Seed"),
+        (rel(525), rel(524), "Alpha"),
+        (rel(524), rel(525), "Beta"),
+    ] {
+        mutual
+            .install_rule(
+                Rule::new(head, [var("value")], [Atom::positive(body, [var("value")])]),
+                format!("Result(value) :- {source}(value)"),
+            )
+            .unwrap();
+    }
+    let mut tx = mutual.begin();
+    tx.assert(rel(523), Tuple::from([int(9)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = mutual.snapshot();
+    assert_eq!(snapshot.scan(rel(525), &[None]).unwrap().len(), 1);
+    assert_maintained_matches_complete(&snapshot, &[(rel(524), 1), (rel(525), 1)]);
+    let mut tx = mutual.begin();
+    tx.retract(rel(523), Tuple::from([int(9)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = mutual.snapshot();
+    assert!(snapshot.scan(rel(524), &[None]).unwrap().is_empty());
+    assert!(snapshot.scan(rel(525), &[None]).unwrap().is_empty());
+    assert_maintained_matches_complete(&snapshot, &[(rel(524), 1), (rel(525), 1)]);
+    let mut tx = mutual.begin();
+    tx.assert(rel(523), Tuple::from([int(9)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = mutual.snapshot();
+    assert_eq!(snapshot.scan(rel(524), &[None]).unwrap().len(), 1);
+    assert_eq!(snapshot.scan(rel(525), &[None]).unwrap().len(), 1);
+    assert_maintained_matches_complete(&snapshot, &[(rel(524), 1), (rel(525), 1)]);
+}
+
+#[test]
+fn recursive_maintenance_handles_multiple_feedback_atoms_and_lower_negation() {
+    let transitive = RelationKernel::new();
+    create_relations(&transitive, &[(530, "Edge", 2), (531, "Reachable", 2)]);
+    transitive
+        .install_rule(
+            Rule::new(
+                rel(531),
+                [var("from"), var("to")],
+                [Atom::positive(rel(530), [var("from"), var("to")])],
+            ),
+            "Reachable(from, to) :- Edge(from, to)",
+        )
+        .unwrap();
+    transitive
+        .install_rule(
+            Rule::new(
+                rel(531),
+                [var("from"), var("to")],
+                [
+                    Atom::positive(rel(531), [var("from"), var("middle")]),
+                    Atom::positive(rel(531), [var("middle"), var("to")]),
+                ],
+            ),
+            "Reachable(from, to) :- Reachable(from, middle), Reachable(middle, to)",
+        )
+        .unwrap();
+    assert_rows(&transitive, rel(530), &[(1, 2), (2, 3), (3, 1)]);
+    let snapshot = transitive.snapshot();
+    assert_eq!(snapshot.scan(rel(531), &[None, None]).unwrap().len(), 9);
+    assert_maintained_matches_complete(&snapshot, &[(rel(531), 2)]);
+    retract_rows(&transitive, rel(530), &[(2, 3)]);
+    let snapshot = transitive.snapshot();
+    assert_maintained_matches_complete(&snapshot, &[(rel(531), 2)]);
+    assert_rows(&transitive, rel(530), &[(2, 3)]);
+    let snapshot = transitive.snapshot();
+    assert_eq!(snapshot.scan(rel(531), &[None, None]).unwrap().len(), 9);
+    assert_maintained_matches_complete(&snapshot, &[(rel(531), 2)]);
+
+    let negated = RelationKernel::new();
+    create_relations(
+        &negated,
+        &[
+            (540, "Seed", 1),
+            (541, "Step", 2),
+            (542, "Blocked", 1),
+            (543, "Live", 1),
+        ],
+    );
+    negated
+        .install_rule(
+            Rule::new(
+                rel(543),
+                [var("node")],
+                [
+                    Atom::positive(rel(540), [var("node")]),
+                    Atom::negated(rel(542), [var("node")]),
+                ],
+            ),
+            "Live(node) :- Seed(node), !Blocked(node)",
+        )
+        .unwrap();
+    negated
+        .install_rule(
+            Rule::new(
+                rel(543),
+                [var("to")],
+                [
+                    Atom::positive(rel(543), [var("from")]),
+                    Atom::positive(rel(541), [var("from"), var("to")]),
+                    Atom::negated(rel(542), [var("to")]),
+                ],
+            ),
+            "Live(to) :- Live(from), Step(from, to), !Blocked(to)",
+        )
+        .unwrap();
+    let mut tx = negated.begin();
+    tx.assert(rel(540), Tuple::from([int(1)])).unwrap();
+    tx.assert(rel(541), Tuple::from([int(1), int(2)])).unwrap();
+    tx.assert(rel(541), Tuple::from([int(2), int(3)])).unwrap();
+    tx.commit().unwrap();
+    let snapshot = negated.snapshot();
+    assert_eq!(snapshot.scan(rel(543), &[None]).unwrap().len(), 3);
+    assert_maintained_matches_complete(&snapshot, &[(rel(543), 1)]);
+
+    for (blocked, expected) in [(true, 1), (false, 3)] {
+        let mut tx = negated.begin();
+        if blocked {
+            tx.assert(rel(542), Tuple::from([int(2)])).unwrap();
+        } else {
+            tx.retract(rel(542), Tuple::from([int(2)])).unwrap();
+        }
+        tx.commit().unwrap();
+        let snapshot = negated.snapshot();
+        assert_eq!(snapshot.scan(rel(543), &[None]).unwrap().len(), expected);
+        assert_maintained_matches_complete(&snapshot, &[(rel(543), 1)]);
     }
 }
