@@ -333,10 +333,11 @@ async fn run_async(cli: Cli) -> Result<(), String> {
     } else {
         None
     };
-    let driver = CompioTaskDriver::spawn_with_workers_and_external_handler(
+    let driver = CompioTaskDriver::spawn_with_workers_and_external_handlers(
         runner,
         cli.driver_threads,
         Some(external_http::handler()),
+        Some(external_http::stream_handler()),
     )
     .map_err(format_driver_error)?;
     metrics::metrics().drivers_started.inc();

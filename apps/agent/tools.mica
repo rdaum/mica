@@ -367,6 +367,26 @@ verb agent/build_tools(agent @ #agent)
   return tools
 end
 
+verb agent/build_responses_tools(agent @ #agent)
+  let workspace = workspace/active(agent)
+  if workspace == nothing
+    return []
+  end
+
+  let tools = []
+  for found in ToolEnabled(workspace, ?tool)
+    let tool = found[:tool]
+    let name = one ToolName(tool, ?name)
+    let description = one ToolDescription(tool, ?description)
+    let parameters = one ToolParameters(tool, ?parameters)
+    if name != nothing && description != nothing && parameters != nothing
+      let spec = {:type -> "function", :name -> name, :description -> description, :parameters -> json_decode(parameters)}
+      tools = [@tools, spec]
+    end
+  end
+  return tools
+end
+
 verb agent/tool_calls(response @ #map)
   let calls = index_or(response, :tool_calls, nothing)
   if calls == nothing
@@ -377,6 +397,24 @@ end
 
 verb agent/tool_calls(response)
   return []
+end
+
+verb agent/record_tool_call(assistant_message, event)
+  let call_id = index_or(event, :call_id, nothing)
+  let tool_name = index_or(event, :name, nothing)
+  let arguments = index_or(event, :arguments, nothing)
+  if call_id == nothing || tool_name == nothing || arguments == nothing
+    return nothing
+  end
+  let tool_call = frob(#tool_call, {:assistant_message -> assistant_message, :call_id -> call_id})
+  assert ToolCall(tool_call)
+  assert ToolCallMessage(tool_call, assistant_message)
+  assert ToolCallId(tool_call, call_id)
+  assert ToolCallName(tool_call, tool_name)
+  assert ToolCallArguments(tool_call, arguments)
+  tool_call.toolCallStatus = "pending"
+  ui/flush(endpoint())
+  return {:entity -> tool_call, :id -> call_id, :name -> tool_name, :arguments -> arguments}
 end
 
 // Cap on tool-call rounds per user message. Stage 4 replaces this with a
@@ -403,14 +441,17 @@ verb agent/execute_tool_calls(agent @ #agent, assistant_message, calls)
         args = {}
       end
 
-      let tool_call = frob(#tool_call, {:assistant_message -> assistant_message, :call_id -> call_id})
-      assert ToolCall(tool_call)
-      assert ToolCallMessage(tool_call, assistant_message)
-      assert ToolCallId(tool_call, call_id)
-      assert ToolCallName(tool_call, tool_name)
-      assert ToolCallArguments(tool_call, args_text)
-      tool_call.toolCallStatus = "pending"
-      ui/flush(endpoint())
+      let tool_call = index_or(call, :entity, nothing)
+      if tool_call == nothing
+        tool_call = frob(#tool_call, {:assistant_message -> assistant_message, :call_id -> call_id})
+        assert ToolCall(tool_call)
+        assert ToolCallMessage(tool_call, assistant_message)
+        assert ToolCallId(tool_call, call_id)
+        assert ToolCallName(tool_call, tool_name)
+        assert ToolCallArguments(tool_call, args_text)
+        tool_call.toolCallStatus = "pending"
+        ui/flush(endpoint())
+      end
 
       let result
       try
@@ -494,11 +535,204 @@ verb agent/llm_messages_with_tools(transcript)
   return messages
 end
 
+verb agent/llm_responses_input(transcript)
+  let input = []
+  for message in agent/messages_ordered(transcript)
+    let role = message.messageRole
+    let content = message.messageContent
+    if content == nothing
+      content = ""
+    end
+    if role == "user" || role == "system"
+      input = [@input, {:role -> role, :content -> content}]
+    elseif role == "assistant"
+      let response_items = message.messageResponseItems
+      if response_items != nothing
+        for item in response_items
+          input = [@input, item]
+        end
+      else
+        if content != ""
+          input = [@input, {:role -> "assistant", :content -> content}]
+        end
+        for found in ToolCallMessage(?call, message)
+          let call_id = one ToolCallId(found[:call], ?id)
+          let call_name = one ToolCallName(found[:call], ?name)
+          let call_args = one ToolCallArguments(found[:call], ?args)
+          if call_id != nothing && call_name != nothing && call_args != nothing
+            input = [@input, {:type -> "function_call", :call_id -> call_id, :name -> call_name, :arguments -> call_args}]
+          end
+        end
+      end
+    elseif role == "tool"
+      let parsed = from_literal(content)
+      if parsed != nothing
+        let call_id = index_or(parsed, :tool_call_id, nothing)
+        let output = index_or(parsed, :content, nothing)
+        if call_id != nothing && output != nothing
+          input = [@input, {:type -> "function_call_output", :call_id -> call_id, :output -> output}]
+        end
+      end
+    end
+  end
+  return input
+end
+
+verb agent/resolve_api(agent @ #agent)
+  let from_env = os_getenv("MICA_AGENT_API")
+  if from_env != nothing
+    return from_env
+  end
+  let configured = agent.agentApi
+  if configured != nothing
+    return configured
+  end
+  return "responses"
+end
+
+verb agent/stream_events(message)
+  if index_or(message, :type, nothing) == :batch
+    return index_or(message, :events, [])
+  end
+  return [message]
+end
+
 verb agent/chat_with_tools(agent @ #agent, transcript)
   let model = agent/resolve_model(agent)
-  let messages = agent/llm_messages_with_tools(transcript)
-  let tools = agent/build_tools(agent)
-  return llm/chat(model, messages, {:stream -> true}, tools)
+  let api = agent/resolve_api(agent)
+  if api != "responses" && api != "chat_completions"
+    raise E_INVARG, string_concat("unsupported agent API: ", api)
+  end
+  let instructions = agent/system_prompt(agent)
+  let request_input
+  let tools
+  if api == "chat_completions"
+    request_input = agent/llm_messages_with_tools(transcript)
+    tools = agent/build_tools(agent)
+  else
+    request_input = agent/llm_responses_input(transcript)
+    tools = agent/build_responses_tools(agent)
+  end
+
+  let [receiver, sender] = mailbox()
+  let steering_subscription = subscribe_changes(sender, :facts, :session/SteeringQueue, [endpoint(), nothing], :changes)
+  let assistant_message = agent/append_message(agent, "assistant", "")
+  assistant_message.messageStatus = "streaming"
+  ui/flush(endpoint())
+
+  if api == "chat_completions"
+    llm/chat_stream(model, request_input, {:stream -> true}, tools, sender)
+  else
+    llm/responses_stream(model, request_input, instructions, {:stream -> true}, tools, sender)
+  end
+
+  let text = ""
+  let pending_text = ""
+  let published_text = false
+  let calls = []
+  let completed_response = nothing
+  let done = false
+  let failed = false
+  let cancelled = false
+  while done == false
+    let ready = mailbox_recv([receiver])
+    for group in ready
+      for message in group[1]
+        if index_or(message, :kind, nothing) == :changes && session/steering_count(endpoint()) > 0
+          done = true
+          cancelled = true
+        else
+          for event in agent/stream_events(message)
+            let kind = index_or(event, :type, nothing)
+            if kind == :text_delta
+              let delta = index_or(event, :delta, "")
+              text = string_concat(text, delta)
+              pending_text = string_concat(pending_text, delta)
+              if published_text == false || string_len(pending_text) >= 96
+                assistant_message.messageContent = text
+                pending_text = ""
+                published_text = true
+                ui/flush(endpoint())
+              end
+            elseif kind == :tool_call_ready
+              let call = agent/record_tool_call(assistant_message, event)
+              if call != nothing
+                calls = [@calls, call]
+              end
+            elseif kind == :completed
+              completed_response = index_or(event, :response, nothing)
+              if text == ""
+                text = index_or(event, :text, "")
+              end
+              done = true
+            elseif kind == :incomplete
+              done = true
+              failed = true
+              if text == ""
+                text = "(LLM response was incomplete)"
+              end
+            elseif kind == :error
+              done = true
+              failed = true
+              let message = index_or(event, :message, "unknown LLM stream error")
+              if text == ""
+                text = string_concat("(LLM error: ", string_concat(message, ")"))
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  assistant_message.messageContent = text
+  if completed_response != nothing
+    let response_id = index_or(completed_response, :id, nothing)
+    let response_model = index_or(completed_response, :model, nothing)
+    let response_usage = index_or(completed_response, :usage, nothing)
+    let response_items = index_or(completed_response, :output, nothing)
+    if response_id != nothing
+      assistant_message.messageResponseId = response_id
+    end
+    if response_model != nothing
+      assistant_message.messageModel = response_model
+    end
+    if response_usage != nothing
+      assistant_message.messageUsage = response_usage
+    end
+    if response_items != nothing
+      assistant_message.messageResponseItems = response_items
+    end
+  end
+  if cancelled
+    if text == ""
+      text = "(interrupted)"
+      assistant_message.messageContent = text
+    end
+    for call in calls
+      let tool_call = call[:entity]
+      tool_call.toolCallStatus = "cancelled"
+    end
+    assistant_message.messageStatus = "cancelled"
+  elseif failed
+    for call in calls
+      let tool_call = call[:entity]
+      tool_call.toolCallStatus = "failed"
+    end
+    assistant_message.messageStatus = "failed"
+  else
+    assistant_message.messageStatus = "complete"
+  end
+  cancel_subscription(steering_subscription)
+  ui/flush(endpoint())
+  mailbox_close(receiver)
+  if cancelled
+    return {:message -> assistant_message, :text -> text, :tool_calls -> [], :cancelled -> true}
+  end
+  if failed
+    return nothing
+  end
+  return {:message -> assistant_message, :text -> text, :tool_calls -> calls}
 end
 
 // Stage 4: steering and follow-up queue helpers.
@@ -610,8 +844,11 @@ verb agent/run_loop_body(agent @ #agent, transcript)
 
     if response == nothing
       round = max_rounds
+    elseif index_or(response, :cancelled, false) == true
+      // The next loop iteration drains the committed steering queue and
+      // submits it with the complete transcript state.
     else
-      let text = llm/assistant_text(response)
+      let text = index_or(response, :text, nothing)
       if text == nothing
         text = ""
       end
@@ -619,9 +856,9 @@ verb agent/run_loop_body(agent @ #agent, transcript)
       if calls == []
         if text == ""
           text = "(no response)"
+          response[:message].messageContent = text
+          ui/flush(endpoint())
         end
-        agent/append_message(agent, "assistant", text)
-        ui/flush(endpoint())
 
         // The LLM stopped. Drain follow-up messages and continue if any.
         let follow_up = session/followup_drain(endpoint())
@@ -634,7 +871,7 @@ verb agent/run_loop_body(agent @ #agent, transcript)
           round = max_rounds
         end
       else
-        let assistant_message = agent/append_message(agent, "assistant", text)
+        let assistant_message = response[:message]
         endpoint().session/loopPhase = "executing"
         ui/flush(endpoint())
         let results = agent/execute_tool_calls(agent, assistant_message, calls)

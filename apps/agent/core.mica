@@ -38,6 +38,7 @@ make_functional_relation(:WorkspaceRevision, 2, [0])
 make_relation(:Agent, 1)
 make_functional_relation(:AgentWorkspace, 2, [0])
 make_functional_relation(:AgentModel, 2, [0])
+make_functional_relation(:AgentApi, 2, [0])
 make_functional_relation(:AgentMaxToolRounds, 2, [0])
 
 make_relation(:Transcript, 1)
@@ -50,6 +51,11 @@ make_functional_relation(:MessageTranscript, 2, [0])
 make_functional_relation(:MessageSeq, 2, [0])
 make_functional_relation(:MessageRole, 2, [0])
 make_functional_relation(:MessageContent, 2, [0])
+make_functional_relation(:MessageStatus, 2, [0])
+make_functional_relation(:MessageResponseId, 2, [0])
+make_functional_relation(:MessageModel, 2, [0])
+make_functional_relation(:MessageUsage, 2, [0])
+make_functional_relation(:MessageResponseItems, 2, [0])
 make_functional_relation(:MessageCreatedAt, 2, [0])
 make_functional_relation(:MessageSource, 2, [0])
 make_relation(:TranscriptEntry, 6)
@@ -82,6 +88,7 @@ assert Delegates(#target/task, #InspectorTarget, 0)
 assert Agent(#agent/default)
 assert Description(#agent/default, "default")
 assert AgentModel(#agent/default, "deepseek/deepseek-v4-pro")
+assert AgentApi(#agent/default, "responses")
 assert AgentMaxToolRounds(#agent/default, 4)
 assert Delegates(#agent/default, #agent, 0)
 assert Delegates(#agent/default, #operator, 0)
@@ -259,14 +266,14 @@ verb list_count(items)
 end
 
 verb agent/resolve_model(agent @ #agent)
-  let configured = agent.agentModel
-  if configured != nothing
-    return configured
-  end
-
   let env_model = os_getenv("MICA_AGENT_MODEL")
   if env_model != nothing
     return env_model
+  end
+
+  let configured = agent.agentModel
+  if configured != nothing
+    return configured
   end
 
   let default = #agent/default.agentModel

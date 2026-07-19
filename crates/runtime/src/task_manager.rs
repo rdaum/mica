@@ -152,6 +152,10 @@ impl MailboxRuntime for MailboxRuntimeHandle {
         self.store.lock().unwrap().create_mailbox()
     }
 
+    fn close_mailbox(&self, receiver: &Value) -> Result<(), RuntimeError> {
+        self.store.lock().unwrap().close_mailbox(receiver)
+    }
+
     fn validate_mailbox_sender(&self, sender: &Value) -> Result<(), RuntimeError> {
         self.store
             .lock()
@@ -201,6 +205,23 @@ impl MailboxStore {
         crate::metrics::metrics().mailboxes_created.inc();
         self.record_queue_metrics();
         Ok((receiver, sender))
+    }
+
+    fn close_mailbox(&mut self, receiver: &Value) -> Result<(), RuntimeError> {
+        let mailbox = self.mailbox_for_receiver(receiver)?;
+        self.caps.retain(|_, cap| match cap {
+            RuntimeCap::Mailbox {
+                mailbox: cap_mailbox,
+                ..
+            }
+            | RuntimeCap::Subscription {
+                mailbox: cap_mailbox,
+            } => *cap_mailbox != mailbox,
+        });
+        self.queues.remove(&mailbox);
+        self.subscription_deliveries.remove(&mailbox);
+        self.record_queue_metrics();
+        Ok(())
     }
 
     fn allocate_cap(&mut self, mailbox: u64, kind: MailboxCapKind) -> Result<Value, RuntimeError> {
@@ -612,6 +633,17 @@ impl TaskManager {
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.mailboxes.mailbox_for_sender(sender)
+    }
+
+    pub fn deliver_mailbox(&self, sender: Value, value: Value) -> Result<u64, RuntimeError> {
+        self.mailboxes
+            .deliver(&[MailboxSend { sender, value }])
+            .into_iter()
+            .next()
+            .ok_or_else(|| RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("mailbox_send"),
+                message: "invalid external mailbox sender".to_owned(),
+            })
     }
 
     pub fn take_subscription_deliveries(&self) -> Vec<u64> {
@@ -1160,6 +1192,17 @@ impl SharedTaskManager {
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.mailboxes.mailbox_for_sender(sender)
+    }
+
+    pub fn deliver_mailbox(&self, sender: Value, value: Value) -> Result<u64, RuntimeError> {
+        self.mailboxes
+            .deliver(&[MailboxSend { sender, value }])
+            .into_iter()
+            .next()
+            .ok_or_else(|| RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("mailbox_send"),
+                message: "invalid external mailbox sender".to_owned(),
+            })
     }
 
     pub fn take_subscription_deliveries(&self) -> Vec<u64> {

@@ -1,4 +1,5 @@
 import { bootstrapServerRenderedSync } from "/sync-client.js?surface=agent";
+import DOMPurify from "https://esm.sh/dompurify@3.2.6";
 import { marked } from "https://esm.sh/marked@13";
 
 window.micaAgent = bootstrapServerRenderedSync(document.getElementById("mount"));
@@ -293,16 +294,20 @@ installAutoScroll(document.getElementById("mount"));
 function linkifyMentions(html) {
     return html.replace(/(^|[\s(>])@(\.\/[^\s`"'*<>\[\]\(\)\)]+)/g, (_, pre, path) => {
         const entity = `#target/file<"${path}">`;
-        return `${pre}<button type="button" class="mention-link" data-entity="${entity}">@${path}</button>`;
+        return `${pre}<button type="button" class="mention-link" data-entity='${entity}'>@${path}</button>`;
     });
 }
 
 function renderMessageContent(el) {
     const raw = el.dataset.rawContent;
     if (raw === undefined) return;
-    delete el.dataset.rawContent;
     const html = marked.parse(raw);
     const linked = linkifyMentions(html);
+    const safe = DOMPurify.sanitize(linked, {
+        USE_PROFILES: { html: true },
+        ADD_TAGS: ["button"],
+        ADD_ATTR: ["data-entity", "class", "type"],
+    });
     const shadow = el.shadowRoot || el.attachShadow({ mode: "open" });
     shadow.innerHTML = `<style>
     :host { all: inherit; }
@@ -328,7 +333,9 @@ function renderMessageContent(el) {
     .markdown-body strong { font-weight: 600; }
     .mention-link { display: inline; background: none; border: none; padding: 0; font-family: var(--mono-font, monospace); font-size: inherit; color: #91d8c7; cursor: pointer; text-decoration: none; }
     .mention-link:hover { text-decoration: underline; }
-  </style><div class="markdown-body">${linked}</div>`;
+  </style><div class="markdown-body">${safe}</div>`;
+    if (shadow._micaMentionHandlerInstalled) return;
+    shadow._micaMentionHandlerInstalled = true;
     shadow.addEventListener("click", (event) => {
         const btn = event.target?.closest?.("button.mention-link");
         if (!btn) return;
@@ -348,23 +355,47 @@ function renderMessageContent(el) {
 }
 
 function installMarkdownRendering(mount) {
+    const pending = new Set();
+    let frame = null;
+    function scheduleRender(el) {
+        pending.add(el);
+        if (frame !== null) return;
+        frame = requestAnimationFrame(() => {
+            frame = null;
+            for (const item of pending) {
+                renderMessageContent(item);
+            }
+            pending.clear();
+        });
+    }
     for (const el of mount.querySelectorAll("[data-raw-content]")) {
         renderMessageContent(el);
     }
     const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
+            if (
+                mutation.type === "attributes"
+                && mutation.target.dataset?.rawContent !== undefined
+            ) {
+                scheduleRender(mutation.target);
+            }
             for (const node of mutation.addedNodes) {
                 if (node.nodeType !== Node.ELEMENT_NODE) continue;
                 if (node.dataset?.rawContent !== undefined) {
-                    renderMessageContent(node);
+                    scheduleRender(node);
                 }
                 for (const el of node.querySelectorAll?.("[data-raw-content]") || []) {
-                    renderMessageContent(el);
+                    scheduleRender(el);
                 }
             }
         }
     });
-    observer.observe(mount, { childList: true, subtree: true });
+    observer.observe(mount, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-raw-content"],
+    });
 }
 
 function installAtCompletion(mount) {
@@ -583,8 +614,11 @@ function installAutoScroll(mount) {
     function refreshTranscriptScroll() {
         for (const el of mount.querySelectorAll("[data-sync-follow='bottom']")) {
             const lastChild = el.lastElementChild;
+            const rawContent = lastChild?.matches?.("[data-raw-content]")
+                ? lastChild
+                : lastChild?.querySelector?.("[data-raw-content]");
             const tailKey = lastChild
-                ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${lastChild.textContent?.length ?? 0}`
+                ? `${lastChild.getAttribute("data-sync-key") ?? ""}:${rawContent?.dataset?.rawContent?.length ?? lastChild.textContent?.length ?? 0}`
                 : "";
             const prevKey = tailKeys.get(el) ?? "";
             if (tailKey && tailKey !== prevKey) {
@@ -601,5 +635,13 @@ function installAutoScroll(mount) {
     refreshTranscriptScroll();
     new MutationObserver(() => {
         refreshTranscriptScroll();
-    }).observe(mount, { childList: true, subtree: true });
+    }).observe(mount, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-raw-content"],
+    });
+    window.addEventListener("mica:sync-applied", () => {
+        requestAnimationFrame(refreshTranscriptScroll);
+    });
 }

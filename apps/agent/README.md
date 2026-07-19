@@ -5,9 +5,12 @@ web-driven, shareable coding agent in the spirit of OpenCode, Claude Code, and J
 input, a transcript, an object inspector, and source fragments, all authored as Mica relations and
 verbs rather than a separate client application.
 
-The agent is wired to an OpenRouter LLM. Submitting a command appends a user message, runs the agent
-loop (LLM call, tool execution, repeat), and appends assistant and tool-result messages to the
-transcript. Read-only tools (`read`, `grep`, `find`, `ls`) query the source-provider crate's
+The agent uses the Responses API by default. Submitting a command appends a user message, creates a
+durable provisional assistant message, and updates that message as typed response events arrive.
+Tool calls and results remain part of the transcript, and every request sends the complete relevant
+Mica-owned context instead of relying on provider-side response history. A Chat Completions adapter
+is available for providers without suitable Responses support. Read-only tools (`read`, `grep`,
+`glob`, `ls`) query the source-provider crate's
 computed relations. The source-provider also exposes syntax, symbol, definition, references, and VCS
 history as computed relations for future tools.
 
@@ -27,8 +30,8 @@ history as computed relations for future tools.
 - Authority derived from relation policy into per-task runtime checks.
 - Tool calls and results as first-class durable facts (`ToolCall`, `ToolResult` relations) that can
   be inspected, replayed, and audited.
-- Agent loop as a Mica verb (`agent/run_loop`) that suspends and resumes across async LLM calls via
-  the runtime's task suspension model.
+- Agent loop as a Mica verb (`agent/run_loop`) that receives typed LLM stream events through a
+  mailbox while ordinary relation updates drive the browser view.
 
 ## Fileins
 
@@ -62,7 +65,8 @@ repository root so the source-provider computed relations can see the workspace.
 `/agent` URL in a browser.
 
 Set `OPENROUTER_API_KEY` in the environment for LLM access. The default model is
-`deepseek/deepseek-v4-pro`; override with `MICA_AGENT_MODEL`.
+`deepseek/deepseek-v4-pro`; override it with `MICA_AGENT_MODEL`. Responses is the default request
+shape. Set `MICA_AGENT_API=chat_completions` to use the explicit Chat Completions adapter.
 
 Without auth enabled, the host renders the workspace view directly. Set `MICA_AUTH_LOCAL_PASSWORD=1`
 or `MICA_AUTH_GITHUB_CLIENT_ID` to require sign-in first; the shell currently renders a sign-in link
@@ -89,7 +93,6 @@ fileins and does not duplicate the sync contract.
 
 ## Next Steps
 
-- Steering and follow-up queues so the user can interrupt or queue messages during the agent loop.
 - Write tools (`edit`, `write`, `bash`) with sandboxing and approvals.
 - Compaction and branching for context-window management.
 - System prompt assembly from skills, context files, and tool snippets.

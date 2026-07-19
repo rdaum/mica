@@ -20,6 +20,7 @@ use mica_runtime::{
 use mica_runtime::{SourceRunner, SuspendKind, TaskOutcome};
 use mica_var::{Identity, Symbol, Value};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn endpoint(offset: u64) -> Identity {
@@ -132,6 +133,98 @@ fn external_request_suspends_and_resumes_from_handler() {
                         Value::string("hello"),
                         Value::int(5).unwrap(),
                     ])
+        )));
+    });
+}
+
+#[test]
+fn external_stream_request_delivers_events_to_mica_mailbox() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let stream_handler = Arc::new(
+            |request: mica_runtime::ExternalRequest,
+             emitter: crate::types::ExternalStreamEmitter| {
+                Box::pin(async move {
+                    assert_eq!(request.service, Symbol::intern("llm_stream"));
+                    emitter
+                        .emit(Value::map([
+                            (
+                                Value::symbol(Symbol::intern("type")),
+                                Value::symbol(Symbol::intern("text_delta")),
+                            ),
+                            (
+                                Value::symbol(Symbol::intern("delta")),
+                                Value::string("hello"),
+                            ),
+                        ]))
+                        .await
+                        .unwrap();
+                    Value::map([(Value::symbol(Symbol::intern("started")), Value::bool(true))])
+                }) as crate::types::ExternalRequestFuture
+            },
+        );
+        let driver = CompioTaskDriver::spawn_with_workers_and_external_handlers(
+            SourceRunner::new_empty(),
+            None,
+            None,
+            Some(stream_handler),
+        )
+        .unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(30),
+                root_source(
+                    "let caps = mailbox()\n\
+                     external_request(:llm_stream, {:stream_to -> caps[1]})\n\
+                     let ready = mailbox_recv([caps[0]], 1)\n\
+                     return ready[0][1][0]",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && value.map_get(&Value::symbol(Symbol::intern("type")))
+                        == Some(Value::symbol(Symbol::intern("text_delta")))
+                    && value.map_get(&Value::symbol(Symbol::intern("delta")))
+                        == Some(Value::string("hello"))
+        )));
+    });
+}
+
+#[test]
+fn missing_external_stream_handler_delivers_an_error_event() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let driver = CompioTaskDriver::spawn_empty().unwrap();
+        let submitted = driver
+            .submit_source(
+                endpoint(31),
+                root_source(
+                    "let caps = mailbox()\n\
+                     external_request(:llm_stream, {:stream_to -> caps[1]})\n\
+                     let ready = mailbox_recv([caps[0]], 1)\n\
+                     return ready[0][1][0]",
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+        compio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(driver.drain_events().iter().any(|event| matches!(
+            event,
+            DriverEvent::TaskCompleted { task_id, value }
+                if *task_id == submitted.task_id
+                    && value.map_get(&Value::symbol(Symbol::intern("type")))
+                        == Some(Value::symbol(Symbol::intern("error")))
+                    && value.map_get(&Value::symbol(Symbol::intern("message")))
+                        == Some(Value::string("no external stream request handler is configured"))
         )));
     });
 }
@@ -260,121 +353,6 @@ fn openai_chat_completion_suspends_as_openai_external_request() {
     });
 }
 
-#[test]
-fn llm_chat_stream_suspends_as_openai_external_request() {
-    compio::runtime::Runtime::new().unwrap().block_on(async {
-        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
-            Box::pin(async move {
-                assert_eq!(request.service, Symbol::intern("openai"));
-                assert_eq!(
-                    request
-                        .payload
-                        .map_get(&Value::symbol(Symbol::intern("model"))),
-                    Some(Value::string("test-stream-model"))
-                );
-                assert_eq!(request.timeout_millis, Some(60_000));
-                Value::map([
-                    (
-                        Value::symbol(Symbol::intern("text")),
-                        Value::string("streamed reply"),
-                    ),
-                    (
-                        Value::symbol(Symbol::intern("tool_calls")),
-                        Value::list([]),
-                    ),
-                    (
-                        Value::symbol(Symbol::intern("stop_reason")),
-                        Value::string("stop"),
-                    ),
-                    (
-                        Value::symbol(Symbol::intern("provider")),
-                        Value::string("test"),
-                    ),
-                ])
-            }) as crate::types::ExternalRequestFuture
-        });
-        let runner = SourceRunner::new_empty();
-        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
-        let submitted = driver
-            .submit_source(
-                endpoint(34),
-                root_source(
-                    "return llm_chat_stream(\"test-stream-model\", [{:role -> \"user\", :content -> \"ping\"}], {:stream -> true}, [])",
-                ),
-            )
-            .await
-            .unwrap();
-
-        assert!(matches!(
-            submitted.outcome,
-            TaskOutcome::Suspended {
-                kind: SuspendKind::ExternalRequest(_),
-                ..
-            }
-        ));
-
-        compio::time::sleep(Duration::from_millis(20)).await;
-
-        assert!(driver.drain_events().iter().any(|event| matches!(
-            event,
-            DriverEvent::TaskCompleted { task_id, value }
-                if *task_id == submitted.task_id
-                    && value
-                        .map_get(&Value::symbol(Symbol::intern("text")))
-                        == Some(Value::string("streamed reply"))
-                    && value
-                        .map_get(&Value::symbol(Symbol::intern("stop_reason")))
-                        == Some(Value::string("stop"))
-        )));
-    });
-}
-
-#[test]
-fn llm_filein_wrapper_verbs_dispatch_to_llm_chat_stream() {
-    compio::runtime::Runtime::new().unwrap().block_on(async {
-        let mut runner = SourceRunner::new_empty();
-        runner
-            .run_filein(include_str!("../../../apps/shared/llm.mica"))
-            .unwrap();
-        let handler = Arc::new(|_request: mica_runtime::ExternalRequest| {
-            Box::pin(async move {
-                Value::map([
-                    (
-                        Value::symbol(Symbol::intern("text")),
-                        Value::string("hi from wrapper"),
-                    ),
-                    (Value::symbol(Symbol::intern("tool_calls")), Value::list([])),
-                    (
-                        Value::symbol(Symbol::intern("stop_reason")),
-                        Value::string("stop"),
-                    ),
-                ])
-            }) as crate::types::ExternalRequestFuture
-        });
-        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
-        let submitted = driver
-            .submit_source(
-                endpoint(35),
-                root_source(
-                    "let r = llm/chat(\"test-model\", [llm/user_message(\"hello\")], {:stream -> true}, [])\n\
-                     return llm/assistant_text(r)",
-                ),
-            )
-            .await
-            .unwrap();
-
-        assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
-
-        compio::time::sleep(Duration::from_millis(20)).await;
-
-assert!(driver.drain_events().iter().any(|event| matches!(
-            event,
-            DriverEvent::TaskCompleted { task_id, value }
-                if *task_id == submitted.task_id && *value == Value::string("hi from wrapper")
-        )));
-    });
-}
-
 fn load_agent_app(runner: &mut SourceRunner) {
     for filein in [
         include_str!("../../../apps/shared/sync-host.mica"),
@@ -398,22 +376,82 @@ fn load_agent_app(runner: &mut SourceRunner) {
 #[test]
 fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
     compio::runtime::Runtime::new().unwrap().block_on(async {
-        let handler = Arc::new(|request: mica_runtime::ExternalRequest| {
-            Box::pin(async move {
-                assert_eq!(request.service, Symbol::intern("openai"));
-                Value::map([
-                    (
-                        Value::symbol(Symbol::intern("text")),
-                        Value::string("synthetic assistant reply"),
-                    ),
-                    (Value::symbol(Symbol::intern("tool_calls")), Value::list([])),
-                    (
-                        Value::symbol(Symbol::intern("stop_reason")),
-                        Value::string("stop"),
-                    ),
-                ])
-            }) as crate::types::ExternalRequestFuture
-        });
+        let stream_handler = Arc::new(
+            |request: mica_runtime::ExternalRequest, emitter: crate::ExternalStreamEmitter| {
+                Box::pin(async move {
+                    assert_eq!(request.service, Symbol::intern("openai_responses"));
+                    let input = request
+                        .payload
+                        .map_get(&Value::symbol(Symbol::intern("input")))
+                        .and_then(|value| value.with_list(<[Value]>::to_vec))
+                        .unwrap();
+                    assert_eq!(input.len(), 1);
+                    assert_eq!(
+                        input[0].map_get(&Value::symbol(Symbol::intern("role"))),
+                        Some(Value::string("user"))
+                    );
+                    assert!(
+                        request
+                            .payload
+                            .map_get(&Value::symbol(Symbol::intern("previous_response_id")))
+                            .is_none()
+                    );
+                    emitter
+                        .emit(Value::map([
+                            (
+                                Value::symbol(Symbol::intern("type")),
+                                Value::symbol(Symbol::intern("text_delta")),
+                            ),
+                            (
+                                Value::symbol(Symbol::intern("delta")),
+                                Value::string("synthetic assistant reply"),
+                            ),
+                        ]))
+                        .await
+                        .unwrap();
+                    emitter
+                        .emit(Value::map([
+                            (
+                                Value::symbol(Symbol::intern("type")),
+                                Value::symbol(Symbol::intern("completed")),
+                            ),
+                            (
+                                Value::symbol(Symbol::intern("response")),
+                                Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("id")),
+                                        Value::string("resp_test"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("model")),
+                                        Value::string("test-model"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("usage")),
+                                        Value::map([(
+                                            Value::symbol(Symbol::intern("output_tokens")),
+                                            Value::int(3).unwrap(),
+                                        )]),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("output")),
+                                        Value::list([Value::map([(
+                                            Value::symbol(Symbol::intern("type")),
+                                            Value::string("message"),
+                                        )])]),
+                                    ),
+                                ]),
+                            ),
+                        ]))
+                        .await
+                        .unwrap();
+                    Value::map([(
+                        Value::symbol(Symbol::intern("started")),
+                        Value::bool(true),
+                    )])
+                }) as crate::types::ExternalRequestFuture
+            },
+        );
 
         let prior = std::env::var_os("MICA_SOURCE_ROOT");
         unsafe {
@@ -440,7 +478,13 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
             )
             .unwrap();
 
-        let driver = CompioTaskDriver::spawn_with_external_handler(runner, handler).unwrap();
+        let driver = CompioTaskDriver::spawn_with_workers_and_external_handlers(
+            runner,
+            None,
+            None,
+            Some(stream_handler),
+        )
+        .unwrap();
 
         let submitted = driver
             .submit_source(
@@ -454,8 +498,7 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
 
         // The loop calls ui/flush (which calls commit()) before the LLM
         // request, so the first suspend may be a Commit. Wait for the
-        // task to complete (the external request handler returns a
-        // canned response).
+        // task to complete (the external stream handler sends canned events).
         assert!(matches!(
             submitted.outcome,
             TaskOutcome::Suspended { .. }
@@ -486,11 +529,15 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
                     "let t = agent/transcript(#agent/default)\n\
                      let role = nothing\n\
                      let content = nothing\n\
+                     let status = nothing\n\
+                     let response_id = nothing\n\
                      for message in agent/messages_ordered(t)\n\
                        role = message.messageRole\n\
                        content = message.messageContent\n\
+                       status = message.messageStatus\n\
+                       response_id = message.messageResponseId\n\
                      end\n\
-                     return [role, content]",
+                     return [role, content, status, response_id]",
                 ),
             )
             .await
@@ -500,8 +547,30 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
             TaskOutcome::Complete { value, .. } if value == Value::list([
                 Value::string("assistant"),
                 Value::string("synthetic assistant reply"),
+                Value::string("complete"),
+                Value::string("resp_test"),
             ])
         ));
+
+        let input_query = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "let t = agent/transcript(#agent/default)\n\
+                     return agent/llm_responses_input(t)",
+                ),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = input_query.outcome else {
+            panic!("Responses input query did not complete")
+        };
+        let input = value.with_list(<[Value]>::to_vec).unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(
+            input[1].map_get(&Value::symbol(Symbol::intern("type"))),
+            Some(Value::string("message"))
+        );
 
         let streaming_query = driver
             .submit_source(
@@ -513,6 +582,394 @@ fn agent_command_sync_event_appends_user_message_and_suspends_for_llm() {
         assert!(matches!(
             streaming_query.outcome,
             TaskOutcome::Complete { value, .. } if value == Value::bool(false)
+        ));
+    });
+}
+
+#[test]
+fn agent_responses_tool_call_round_trip_resubmits_full_context() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let stream_handler = {
+            let request_count = Arc::clone(&request_count);
+            Arc::new(
+                move |request: mica_runtime::ExternalRequest,
+                      emitter: crate::ExternalStreamEmitter| {
+                    let turn = request_count.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async move {
+                        assert_eq!(request.service, Symbol::intern("openai_responses"));
+                        let input = request
+                            .payload
+                            .map_get(&Value::symbol(Symbol::intern("input")))
+                            .and_then(|value| value.with_list(<[Value]>::to_vec))
+                            .unwrap();
+                        assert!(
+                            request
+                                .payload
+                                .map_get(&Value::symbol(Symbol::intern("previous_response_id")))
+                                .is_none()
+                        );
+
+                        if turn == 0 {
+                            assert_eq!(input.len(), 1);
+                            emitter
+                                .emit(Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("type")),
+                                        Value::symbol(Symbol::intern("tool_call_ready")),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("call_id")),
+                                        Value::string("call_test"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("name")),
+                                        Value::string("read"),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("arguments")),
+                                        Value::string("{\"path\":\"missing.txt\"}"),
+                                    ),
+                                ]))
+                                .await
+                                .unwrap();
+                            emitter
+                                .emit(Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("type")),
+                                        Value::symbol(Symbol::intern("completed")),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("response")),
+                                        Value::map([
+                                            (
+                                                Value::symbol(Symbol::intern("id")),
+                                                Value::string("resp_tool"),
+                                            ),
+                                            (
+                                                Value::symbol(Symbol::intern("output")),
+                                                Value::list([Value::map([
+                                                    (
+                                                        Value::symbol(Symbol::intern("type")),
+                                                        Value::string("function_call"),
+                                                    ),
+                                                    (
+                                                        Value::symbol(Symbol::intern("call_id")),
+                                                        Value::string("call_test"),
+                                                    ),
+                                                    (
+                                                        Value::symbol(Symbol::intern("name")),
+                                                        Value::string("read"),
+                                                    ),
+                                                    (
+                                                        Value::symbol(Symbol::intern("arguments")),
+                                                        Value::string(
+                                                            "{\"path\":\"missing.txt\"}",
+                                                        ),
+                                                    ),
+                                                ])]),
+                                            ),
+                                        ]),
+                                    ),
+                                ]))
+                                .await
+                                .unwrap();
+                        } else {
+                            assert_eq!(turn, 1);
+                            assert_eq!(input.len(), 3);
+                            assert_eq!(
+                                input[1].map_get(&Value::symbol(Symbol::intern("type"))),
+                                Some(Value::string("function_call"))
+                            );
+                            assert_eq!(
+                                input[2].map_get(&Value::symbol(Symbol::intern("type"))),
+                                Some(Value::string("function_call_output"))
+                            );
+                            assert_eq!(
+                                input[2].map_get(&Value::symbol(Symbol::intern("call_id"))),
+                                Some(Value::string("call_test"))
+                            );
+                            emitter
+                                .emit(Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("type")),
+                                        Value::symbol(Symbol::intern("text_delta")),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("delta")),
+                                        Value::string("tool result received"),
+                                    ),
+                                ]))
+                                .await
+                                .unwrap();
+                            emitter
+                                .emit(Value::map([(
+                                    Value::symbol(Symbol::intern("type")),
+                                    Value::symbol(Symbol::intern("completed")),
+                                )]))
+                                .await
+                                .unwrap();
+                        }
+                        Value::map([(
+                            Value::symbol(Symbol::intern("started")),
+                            Value::bool(true),
+                        )])
+                    }) as crate::types::ExternalRequestFuture
+                },
+            )
+        };
+
+        let prior = std::env::var_os("MICA_SOURCE_ROOT");
+        unsafe {
+            std::env::set_var("MICA_SOURCE_ROOT", "/tmp/agent-tool-test-root");
+        }
+        let mut runner = SourceRunner::new_empty();
+        load_agent_app(&mut runner);
+        match prior {
+            Some(value) => unsafe { std::env::set_var("MICA_SOURCE_ROOT", value) },
+            None => unsafe { std::env::remove_var("MICA_SOURCE_ROOT") },
+        }
+
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let agent = runner
+            .named_identity(Symbol::intern("agent/default"))
+            .unwrap();
+        let ep = endpoint(42);
+        runner
+            .open_endpoint_with_context(ep, Some(web), Some(agent), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn_with_workers_and_external_handlers(
+            runner,
+            None,
+            None,
+            Some(stream_handler),
+        )
+        .unwrap();
+
+        let submitted = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "return sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"agent_command\", {:text -> \"use a tool\"})",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(submitted.outcome, TaskOutcome::Suspended { .. }));
+
+        let mut completed = false;
+        for _ in 0..200 {
+            completed |= driver.drain_events().iter().any(|event| {
+                matches!(event, DriverEvent::TaskCompleted { task_id, .. } if *task_id == submitted.task_id)
+            });
+            if completed {
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(completed, "agent tool-call task did not complete");
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+
+        let query = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "let found = one ToolCallId(?call, \"call_test\")\n\
+                     let t = agent/transcript(#agent/default)\n\
+                     let last_content = nothing\n\
+                     for message in agent/messages_ordered(t)\n\
+                       last_content = message.messageContent\n\
+                     end\n\
+                     return [found.toolCallStatus, last_content]",
+                ),
+            )
+            .await
+            .unwrap();
+        let TaskOutcome::Complete { value, .. } = query.outcome else {
+            panic!("tool state query did not complete: {:?}", query.outcome)
+        };
+        assert_eq!(
+            value,
+            Value::list([
+                Value::string("error"),
+                Value::string("tool result received"),
+            ])
+        );
+    });
+}
+
+#[test]
+fn agent_steering_cancels_the_active_stream_and_resubmits_full_context() {
+    compio::runtime::Runtime::new().unwrap().block_on(async {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let producer_observed_close = Arc::new(AtomicBool::new(false));
+        let stream_handler = {
+            let request_count = Arc::clone(&request_count);
+            let producer_observed_close = Arc::clone(&producer_observed_close);
+            Arc::new(
+                move |request: mica_runtime::ExternalRequest,
+                      emitter: crate::ExternalStreamEmitter| {
+                    let turn = request_count.fetch_add(1, Ordering::SeqCst);
+                    let producer_observed_close = Arc::clone(&producer_observed_close);
+                    Box::pin(async move {
+                        let input = request
+                            .payload
+                            .map_get(&Value::symbol(Symbol::intern("input")))
+                            .and_then(|value| value.with_list(<[Value]>::to_vec))
+                            .unwrap();
+                        if turn == 0 {
+                            assert_eq!(input.len(), 1);
+                            compio::runtime::spawn(async move {
+                                emitter
+                                    .emit(Value::map([
+                                        (
+                                            Value::symbol(Symbol::intern("type")),
+                                            Value::symbol(Symbol::intern("text_delta")),
+                                        ),
+                                        (
+                                            Value::symbol(Symbol::intern("delta")),
+                                            Value::string("partial"),
+                                        ),
+                                    ]))
+                                    .await
+                                    .unwrap();
+                                compio::time::sleep(Duration::from_millis(150)).await;
+                                let closed = emitter
+                                    .emit(Value::map([(
+                                        Value::symbol(Symbol::intern("type")),
+                                        Value::symbol(Symbol::intern("text_delta")),
+                                    )]))
+                                    .await
+                                    .is_err();
+                                producer_observed_close.store(closed, Ordering::SeqCst);
+                            })
+                            .detach();
+                        } else {
+                            assert_eq!(input.len(), 3);
+                            assert_eq!(
+                                input[2].map_get(&Value::symbol(Symbol::intern("content"))),
+                                Some(Value::string("change direction"))
+                            );
+                            emitter
+                                .emit(Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("type")),
+                                        Value::symbol(Symbol::intern("text_delta")),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("delta")),
+                                        Value::string("final reply"),
+                                    ),
+                                ]))
+                                .await
+                                .unwrap();
+                            emitter
+                                .emit(Value::map([(
+                                    Value::symbol(Symbol::intern("type")),
+                                    Value::symbol(Symbol::intern("completed")),
+                                )]))
+                                .await
+                                .unwrap();
+                        }
+                        Value::map([(
+                            Value::symbol(Symbol::intern("started")),
+                            Value::bool(true),
+                        )])
+                    }) as crate::types::ExternalRequestFuture
+                },
+            )
+        };
+
+        let prior = std::env::var_os("MICA_SOURCE_ROOT");
+        unsafe {
+            std::env::set_var("MICA_SOURCE_ROOT", "/tmp/agent-steering-test-root");
+        }
+        let mut runner = SourceRunner::new_empty();
+        load_agent_app(&mut runner);
+        match prior {
+            Some(value) => unsafe { std::env::set_var("MICA_SOURCE_ROOT", value) },
+            None => unsafe { std::env::remove_var("MICA_SOURCE_ROOT") },
+        }
+        let web = runner.named_identity(Symbol::intern("web")).unwrap();
+        let agent = runner
+            .named_identity(Symbol::intern("agent/default"))
+            .unwrap();
+        let ep = endpoint(41);
+        runner
+            .open_endpoint_with_context(ep, Some(web), Some(agent), Symbol::intern("web"))
+            .unwrap();
+        let driver = CompioTaskDriver::spawn_with_workers_and_external_handlers(
+            runner,
+            None,
+            None,
+            Some(stream_handler),
+        )
+        .unwrap();
+
+        let first = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "return sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"agent_command\", {:text -> \"initial request\"})",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(first.outcome, TaskOutcome::Suspended { .. }));
+
+        for _ in 0..100 {
+            if request_count.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let steering = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "return sync_event(endpoint(), nothing, 31, \"submit\", \"\", \"agent_command\", {:text -> \"change direction\"})",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(steering.outcome, TaskOutcome::Complete { .. }));
+
+        let mut first_completed = false;
+        for _ in 0..200 {
+            first_completed |= driver.drain_events().iter().any(|event| {
+                matches!(event, DriverEvent::TaskCompleted { task_id, .. } if *task_id == first.task_id)
+            });
+            if first_completed && producer_observed_close.load(Ordering::SeqCst) {
+                break;
+            }
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(first_completed);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        assert!(producer_observed_close.load(Ordering::SeqCst));
+
+        let query = driver
+            .submit_source(
+                ep,
+                root_source(
+                    "let t = agent/transcript(#agent/default)\n\
+                     let rows = []\n\
+                     for message in agent/messages_ordered(t)\n\
+                       rows = [@rows, [message.messageRole, message.messageContent, message.messageStatus]]\n\
+                     end\n\
+                     return rows",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            query.outcome,
+            TaskOutcome::Complete { value, .. } if value == Value::list([
+                Value::list([Value::string("user"), Value::string("initial request"), Value::nothing()]),
+                Value::list([Value::string("assistant"), Value::string("partial"), Value::string("cancelled")]),
+                Value::list([Value::string("user"), Value::string("change direction"), Value::nothing()]),
+                Value::list([Value::string("assistant"), Value::string("final reply"), Value::string("complete")]),
+            ])
         ));
     });
 }

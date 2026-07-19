@@ -574,6 +574,10 @@ impl SourceRunner {
         self.task_manager.mailbox_for_sender(sender)
     }
 
+    pub fn deliver_mailbox(&self, sender: Value, value: Value) -> Result<u64, RuntimeError> {
+        self.task_manager.deliver_mailbox(sender, value)
+    }
+
     pub fn take_subscription_deliveries(&self) -> Vec<u64> {
         self.task_manager.take_subscription_deliveries()
     }
@@ -1657,6 +1661,10 @@ impl SharedSourceRunner {
 
     pub fn mailbox_for_sender(&self, sender: &Value) -> Result<u64, RuntimeError> {
         self.task_manager.mailbox_for_sender(sender)
+    }
+
+    pub fn deliver_mailbox(&self, sender: Value, value: Value) -> Result<u64, RuntimeError> {
+        self.task_manager.deliver_mailbox(sender, value)
     }
 
     pub fn take_subscription_deliveries(&self) -> Vec<u64> {
@@ -3793,6 +3801,11 @@ fn default_builtins(embedding_provider: Arc<dyn embedding::EmbeddingProvider>) -
             mailbox_send_builtin,
         )
         .with_builtin(
+            "mailbox_close",
+            BuiltinResultKind::Exact(ValueKind::Relation),
+            mailbox_close_builtin,
+        )
+        .with_builtin(
             "subscribe_changes",
             BuiltinResultKind::Exact(ValueKind::Capability),
             subscribe_changes_builtin,
@@ -4102,6 +4115,20 @@ fn mailbox_send_builtin(
     let value = args[1].clone();
     context.send_mailbox(sender, value.clone())?;
     Ok(value)
+}
+
+fn mailbox_close_builtin(
+    context: &mut BuiltinContext<'_, '_>,
+    args: &[Value],
+) -> Result<Value, RuntimeError> {
+    if args.len() != 1 {
+        return Err(invalid_builtin_call(
+            "mailbox_close",
+            "expected mailbox_close(receiver)",
+        ));
+    }
+    context.close_mailbox(&args[0])?;
+    Ok(Value::nothing())
 }
 
 fn subscribe_changes_builtin(

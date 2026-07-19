@@ -5259,6 +5259,18 @@ fn runner_mailbox_allocates_fresh_directional_caps() {
 }
 
 #[test]
+fn runner_mailbox_close_revokes_both_capabilities() {
+    let mut runner = SourceRunner::new_empty();
+    let result = runner.run_source(
+        "let caps = mailbox()\n\
+             mailbox_close(caps[0])\n\
+             return mailbox_send(caps[1], \"late\")",
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
 fn runner_mailbox_recv_expands_argument_splices() {
     let mut runner = SourceRunner::new_empty();
     let report = runner

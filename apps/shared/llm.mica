@@ -1,13 +1,6 @@
-// Streaming LLM chat helpers. The daemon routes these host requests through
-// OpenRouter by default using OPENROUTER_API_KEY.
-//
-// The llm/chat verb calls llm_chat_stream, which sends an OpenAI-compatible
-// streaming chat completion request, accumulates the SSE chunks in the daemon
-// handler, and returns an assembled response map:
-//   {:text -> "...", :tool_calls -> [...], :stop_reason -> "stop"|"tool_use"|...,
-//    :usage -> {...}, :model -> "...", :provider -> "openrouter"}
-
-make_identity(:llm/chat)
+// LLM request helpers. Responses streams are delivered as typed events to a
+// caller-owned mailbox. Chat Completions remains available as an explicit
+// provider-compatibility adapter and uses the same event vocabulary.
 
 verb llm/system_message(content @ #string)
   return {:role -> "system", :content -> content}
@@ -25,23 +18,22 @@ verb llm/tool_message(tool_call_id @ #string, content @ #string)
   return {:role -> "tool", :tool_call_id -> tool_call_id, :content -> content}
 end
 
-verb llm/chat(model @ #string, messages)
-  let options = {:stream -> true}
-  return llm_chat_stream(model, messages, options, [])
-end
-
-verb llm/chat(model @ #string, messages, options)
-  let opts = llm/ensure_stream(options)
-  return llm_chat_stream(model, messages, opts, [])
-end
-
-verb llm/chat(model @ #string, messages, options, tools)
+verb llm/responses_stream(model @ #string, input, instructions, options, tools, sender)
   let opts = llm/ensure_stream(options)
   let request_tools = tools
   if request_tools == nothing
     request_tools = []
   end
-  return llm_chat_stream(model, messages, opts, request_tools)
+  return llm_responses_stream(model, input, instructions, opts, request_tools, sender)
+end
+
+verb llm/chat_stream(model @ #string, messages, options, tools, sender)
+  let opts = llm/ensure_stream(options)
+  let request_tools = tools
+  if request_tools == nothing
+    request_tools = []
+  end
+  return llm_chat_stream_to(model, messages, opts, request_tools, sender)
 end
 
 verb llm/ensure_stream(options)
@@ -53,12 +45,4 @@ verb llm/ensure_stream(options)
     opts[pair[0]] = pair[1]
   end
   return opts
-end
-
-verb llm/assistant_text(response @ #map)
-  return response[:text]
-end
-
-verb llm/assistant_text(response)
-  return nothing
 end

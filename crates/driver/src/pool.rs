@@ -14,7 +14,8 @@
 use crate::execution::CpuAdmission;
 use crate::{
     DispatcherConfig, DriverError, DriverEvent, DriverSubscriptionMailbox,
-    DriverSubscriptionRequest, ExternalRequestHandler, TaskContext, configure_dispatcher,
+    DriverSubscriptionRequest, ExternalRequestHandler, ExternalStreamEmitter,
+    ExternalStreamRequestHandler, TaskContext, configure_dispatcher,
     metrics::{self, AsyncWorkerKind, DispatchOperation, WorkerOutcome},
 };
 use compio::dispatcher::Dispatcher;
@@ -71,6 +72,7 @@ struct PoolInner {
     dispatcher: Dispatcher,
     cpu_admission: Arc<CpuAdmission>,
     external_request_handler: Option<ExternalRequestHandler>,
+    external_stream_request_handler: Option<ExternalStreamRequestHandler>,
     state: Mutex<PoolState>,
 }
 
@@ -115,13 +117,31 @@ impl CompioTaskDriver {
         workers: Option<NonZeroUsize>,
         external_request_handler: Option<ExternalRequestHandler>,
     ) -> Result<Self, DriverError> {
-        Self::spawn_with_config_and_external_handler(
+        Self::spawn_with_config_and_external_handlers(
             runner,
             DispatcherConfig {
                 workers,
                 ..DispatcherConfig::default()
             },
             external_request_handler,
+            None,
+        )
+    }
+
+    pub fn spawn_with_workers_and_external_handlers(
+        runner: SourceRunner,
+        workers: Option<NonZeroUsize>,
+        external_request_handler: Option<ExternalRequestHandler>,
+        external_stream_request_handler: Option<ExternalStreamRequestHandler>,
+    ) -> Result<Self, DriverError> {
+        Self::spawn_with_config_and_external_handlers(
+            runner,
+            DispatcherConfig {
+                workers,
+                ..DispatcherConfig::default()
+            },
+            external_request_handler,
+            external_stream_request_handler,
         )
     }
 
@@ -147,6 +167,20 @@ impl CompioTaskDriver {
         runner: SourceRunner,
         config: DispatcherConfig,
         external_request_handler: Option<ExternalRequestHandler>,
+    ) -> Result<Self, DriverError> {
+        Self::spawn_with_config_and_external_handlers(
+            runner,
+            config,
+            external_request_handler,
+            None,
+        )
+    }
+
+    pub fn spawn_with_config_and_external_handlers(
+        runner: SourceRunner,
+        config: DispatcherConfig,
+        external_request_handler: Option<ExternalRequestHandler>,
+        external_stream_request_handler: Option<ExternalStreamRequestHandler>,
     ) -> Result<Self, DriverError> {
         let (builder, placement) = configure_dispatcher(Dispatcher::builder(), config);
         let cpu_admission = Arc::new(CpuAdmission::new(placement.worker_count));
@@ -203,6 +237,7 @@ impl CompioTaskDriver {
                 dispatcher,
                 cpu_admission,
                 external_request_handler,
+                external_stream_request_handler,
                 state: Mutex::new(PoolState::default()),
             }),
         })
@@ -1148,6 +1183,10 @@ impl CompioTaskDriver {
     ) {
         let driver = self.clone();
         let handler = self.inner.external_request_handler.clone();
+        let stream_handler = self.inner.external_stream_request_handler.clone();
+        let stream_sender = request
+            .payload
+            .map_get(&Value::symbol(Symbol::intern("stream_to")));
         let timeout = request.timeout_millis.map(Duration::from_millis);
         let service = request.service;
         tracing::debug!(
@@ -1210,7 +1249,43 @@ impl CompioTaskDriver {
                 service = service.name().unwrap_or("<unnamed>"),
                 "driver external request started"
             );
-            let value = if service == Symbol::intern("mica_query") {
+            let value = if let Some(stream_sender) = stream_sender {
+                match stream_handler {
+                    Some(handler) => {
+                        let emit_driver = driver.clone();
+                        let emitter = ExternalStreamEmitter::new(Arc::new(move |value| {
+                            let emit_driver = emit_driver.clone();
+                            let stream_sender = stream_sender.clone();
+                            Box::pin(async move {
+                                emit_driver
+                                    .deliver_external_mailbox(stream_sender, value)
+                                    .await
+                                    .map_err(|error| emit_driver.format_error(&error))
+                            })
+                        }));
+                        handler(request, emitter).await
+                    }
+                    None => {
+                        let message = "no external stream request handler is configured";
+                        let _ = driver
+                            .deliver_external_mailbox(
+                                stream_sender,
+                                Value::map([
+                                    (
+                                        Value::symbol(Symbol::intern("type")),
+                                        Value::symbol(Symbol::intern("error")),
+                                    ),
+                                    (
+                                        Value::symbol(Symbol::intern("message")),
+                                        Value::string(message),
+                                    ),
+                                ]),
+                            )
+                            .await;
+                        Value::error(Symbol::intern("ExternalUnavailable"), Some(message), None)
+                    }
+                }
+            } else if service == Symbol::intern("mica_query") {
                 driver.perform_mica_query_request(task_id, request).await
             } else {
                 match handler {
@@ -1261,6 +1336,21 @@ impl CompioTaskDriver {
             );
         })
         .detach();
+    }
+
+    async fn deliver_external_mailbox(
+        &self,
+        sender: Value,
+        value: Value,
+    ) -> Result<(), DriverError> {
+        let mailbox = self
+            .inner
+            .runner
+            .deliver_mailbox(sender, value)
+            .map_err(runtime_driver_error)?;
+        let mut queue = VecDeque::new();
+        self.wake_mailbox_waiters(vec![mailbox], &mut queue).await?;
+        self.process_outcome_queue(&mut queue).await
     }
 
     async fn perform_mica_query_request(

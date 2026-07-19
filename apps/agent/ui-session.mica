@@ -48,6 +48,7 @@ grant #web
     :Agent
     :AgentWorkspace
     :AgentModel
+    :AgentApi
     :Workspace
     :WorkspaceRoot
     :WorkspaceProvider
@@ -60,6 +61,11 @@ grant #web
     :MessageSeq
     :MessageRole
     :MessageContent
+    :MessageStatus
+    :MessageResponseId
+    :MessageModel
+    :MessageUsage
+    :MessageResponseItems
     :TranscriptEntry
     :TranscriptToolCall
     :TranscriptToolResult
@@ -86,6 +92,11 @@ grant #web
     :MessageSeq
     :MessageRole
     :MessageContent
+    :MessageStatus
+    :MessageResponseId
+    :MessageModel
+    :MessageUsage
+    :MessageResponseItems
   invoke:
     :sync_event
     :sync_view_dependencies
@@ -134,6 +145,7 @@ grant role #operator
     :Agent
     :AgentWorkspace
     :AgentModel
+    :AgentApi
     :AgentMaxToolRounds
     :Workspace
     :WorkspaceRoot
@@ -147,6 +159,11 @@ grant role #operator
     :MessageSeq
     :MessageRole
     :MessageContent
+    :MessageStatus
+    :MessageResponseId
+    :MessageModel
+    :MessageUsage
+    :MessageResponseItems
     :TranscriptEntry
     :Tool
     :ToolName
@@ -216,6 +233,11 @@ grant role #operator
     :MessageSeq
     :MessageRole
     :MessageContent
+    :MessageStatus
+    :MessageResponseId
+    :MessageModel
+    :MessageUsage
+    :MessageResponseItems
     :ToolCall
     :ToolCallMessage
     :ToolCallId
@@ -299,11 +321,16 @@ grant role #operator
     :agent/messages
     :agent/messages_ordered
     :agent/resolve_model
+    :agent/resolve_api
     :agent/system_prompt
     :agent/max_tool_rounds
     :agent/llm_messages_with_tools
+    :agent/llm_responses_input
     :agent/build_tools
+    :agent/build_responses_tools
+    :agent/stream_events
     :agent/tool_calls
+    :agent/record_tool_call
     :agent/execute_tool_calls
     :agent/chat_with_tools
     :agent/run_loop
@@ -356,13 +383,13 @@ grant role #operator
     :lower
     :trim
     :os_getenv
-    :llm/chat
+    :llm/chat_stream
+    :llm/responses_stream
     :llm/ensure_stream
     :llm/system_message
     :llm/user_message
     :llm/assistant_message
     :llm/tool_message
-    :llm/assistant_text
     :frob
     :frob_delegate
     :frob_value

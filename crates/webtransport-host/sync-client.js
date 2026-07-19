@@ -1158,6 +1158,14 @@ export function dispatchSyncLoading(kind, detail) {
     window.dispatchEvent(new EventCtor(`mica:sync-loading-${kind}`, { detail }));
 }
 
+export function dispatchSyncApplied(detail) {
+    if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+        return;
+    }
+    const EventCtor = globalThis.CustomEvent ?? Event;
+    window.dispatchEvent(new EventCtor("mica:sync-applied", { detail }));
+}
+
 function randomSessionId() {
     if (globalThis.crypto?.getRandomValues) {
         const values = new Uint32Array(1);
@@ -1336,6 +1344,7 @@ export class MicaSseSyncClient {
         this.onEnvelope = options.onEnvelope;
         this.onClose = options.onClose;
         this.onError = options.onError;
+        this.onReconnect = options.onReconnect;
         this.source = null;
     }
 
@@ -1359,6 +1368,7 @@ export class MicaSseSyncClient {
             source.addEventListener("open", () => {
                 this.source = source;
                 if (settled) {
+                    this.onReconnect?.();
                     return;
                 }
                 settled = true;
@@ -1377,7 +1387,11 @@ export class MicaSseSyncClient {
                 }
             });
             source.addEventListener("error", () => {
-                fail("SSE connection failed");
+                if (source.readyState === EventSource.CLOSED) {
+                    fail("SSE connection closed");
+                    return;
+                }
+                this.onError?.(new Error("SSE connection interrupted; reconnecting"));
             });
         });
     }
@@ -1506,6 +1520,11 @@ export function bootstrapServerRenderedSync(mount, status) {
     let inFlightDomEvent = null;
     const pendingDomEvents = [];
     let drainingDomEvents = false;
+    let recovering = false;
+    let reconnectTimer = null;
+    let reconnectDelayMs = 250;
+    const pendingEnvelopes = [];
+    let envelopeFrame = null;
     const api = { client: null, state };
 
     function setStatus(text) {
@@ -1599,7 +1618,7 @@ export function bootstrapServerRenderedSync(mount, status) {
                 setStatus(connectionFailureText(connectError));
                 return false;
             }
-            return true;
+            return connected && initialSynced;
         } catch (error) {
             connectError = error;
             setStatus(connectionFailureText(error));
@@ -1678,7 +1697,11 @@ export function bootstrapServerRenderedSync(mount, status) {
             }
         } finally {
             drainingDomEvents = false;
-            if (inFlightDomEvent === null && pendingDomEvents.length > 0) {
+            if (
+                connected
+                && inFlightDomEvent === null
+                && pendingDomEvents.length > 0
+            ) {
                 drainDomEvents();
             }
         }
@@ -1755,15 +1778,27 @@ export function bootstrapServerRenderedSync(mount, status) {
             initialSynced = true;
             initialSyncResolve(true);
         }
+        if (recovering && envelope.kind === "ViewSnapshot") {
+            recovering = false;
+            connected = true;
+            reconnectDelayMs = 250;
+            startPolling();
+            drainDomEvents();
+        }
         bindViewportObservers(mount, sendViewportEvent);
         finishInFlightDomEvent(true);
+        dispatchSyncApplied({
+            kind: envelope.kind,
+            view: envelope.view,
+            revision: envelope.serverRevision,
+        });
         recordSyncTiming("accept_envelope", startedAt, {
             kind: envelope.kind,
             revision: envelope.serverRevision,
         });
     }
 
-    function handle(envelope) {
+    function processEnvelope(envelope) {
         const startedAt = nowMs();
         try {
             handleEnvelope(envelope);
@@ -1775,12 +1810,50 @@ export function bootstrapServerRenderedSync(mount, status) {
         }
     }
 
+    function scheduleEnvelopeDrain() {
+        if (envelopeFrame !== null) {
+            return;
+        }
+        const schedule = globalThis.requestAnimationFrame
+            ?? ((callback) => setTimeout(() => callback(nowMs()), 0));
+        envelopeFrame = schedule(() => {
+            envelopeFrame = null;
+            const frameStart = nowMs();
+            let processed = 0;
+            while (
+                pendingEnvelopes.length > 0
+                && processed < 32
+                && nowMs() - frameStart < 8
+            ) {
+                processEnvelope(pendingEnvelopes.shift());
+                processed += 1;
+            }
+            if (pendingEnvelopes.length > 0) {
+                scheduleEnvelopeDrain();
+            }
+        });
+    }
+
+    function handle(envelope) {
+        pendingEnvelopes.push(envelope);
+        if (pendingEnvelopes.length > 512) {
+            pendingEnvelopes.length = 0;
+            recoverView("client-overload");
+            return;
+        }
+        scheduleEnvelopeDrain();
+    }
+
     function handleEnvelope(envelope) {
+        if (recovering && envelope.kind !== "ViewSnapshot") {
+            return;
+        }
         if (envelope.kind === "ViewSnapshot") {
             const serverRevision = BigInt(envelope.serverRevision);
             const serverSignature = BigInt(envelope.serverSignature);
             if (
                 initialSynced
+                && !recovering
                 && (serverRevision < state.revision
                     || (serverRevision === state.revision && serverSignature === state.signature))
             ) {
@@ -1855,37 +1928,75 @@ export function bootstrapServerRenderedSync(mount, status) {
                 if (!initialSynced) {
                     initialSyncReject(error);
                 }
-                client
-                    .needView(viewState("recover"))
-                    .catch((requestError) => setStatus(String(requestError)));
+                recoverView("delta-recovery");
             }
         }
     }
 
-    async function connect() {
-        const onClose = () => {
-            connected = false;
-            stopPolling();
-            finishInFlightDomEvent();
-            if (!initialSynced) {
-                initialSyncReject(
-                    new Error(
-                        state.transport === "webtransport"
-                            ? "WebTransport closed before initial sync"
-                            : "SSE stream closed before initial sync",
-                    ),
-                );
+    async function recoverView(reason) {
+        if (recovering || !client) {
+            return;
+        }
+        recovering = true;
+        connected = false;
+        pendingEnvelopes.length = 0;
+        stopPolling();
+        finishInFlightDomEvent();
+        setStatus("Recovering");
+        try {
+            await client.needView(viewState(reason));
+        } catch (error) {
+            recovering = false;
+            setStatus(String(error));
+            scheduleReconnect();
+        }
+    }
+
+    function scheduleReconnect() {
+        if (reconnectTimer !== null || !initialSynced) {
+            return;
+        }
+        const delay = reconnectDelayMs;
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10000);
+        reconnectTimer = setTimeout(async () => {
+            reconnectTimer = null;
+            try {
+                const previousClient = client;
+                client = createClient();
+                api.client = client;
+                previousClient?.close();
+                await client.connect();
+                recovering = false;
+                await recoverView("transport-reconnect");
+            } catch (error) {
+                setStatus(String(error));
+                scheduleReconnect();
             }
-            setStatus("Disconnected");
+        }, delay);
+    }
+
+    function connectionLost(error, shouldReconnect = state.transport === "webtransport") {
+        connected = false;
+        stopPolling();
+        finishInFlightDomEvent();
+        setStatus(String(error ?? "Disconnected"));
+        if (shouldReconnect) {
+            scheduleReconnect();
+        }
+    }
+
+    function createClient() {
+        let candidate;
+        const onClose = () => {
+            if (client !== candidate) return;
+            if (!initialSynced) {
+                initialSyncReject(new Error(`${state.transport} closed before initial sync`));
+            }
+            connectionLost("Disconnected", true);
         };
         const onError = (error) => {
-            connected = false;
-            stopPolling();
-            finishInFlightDomEvent();
-            if (!initialSynced) {
-                initialSyncReject(error);
-            }
-            setStatus(String(error));
+            if (client !== candidate) return;
+            connectionLost(error);
         };
         if (state.transport === "webtransport") {
             if (!state.url) {
@@ -1893,7 +2004,7 @@ export function bootstrapServerRenderedSync(mount, status) {
                     "missing WebTransport URL; pass ?transport=webtransport&url=https://.../view",
                 );
             }
-            client = new MicaWebTransportSyncClient({
+            candidate = new MicaWebTransportSyncClient({
                 url: state.url,
                 certificateHash: state.certificateHash,
                 onEnvelope: handle,
@@ -1901,16 +2012,27 @@ export function bootstrapServerRenderedSync(mount, status) {
                 onError,
             });
         } else if (state.transport === "sse") {
-            client = new MicaSseSyncClient({
+            candidate = new MicaSseSyncClient({
                 streamUrl: `${state.syncUrl}/events?session=${state.session}`,
                 sendUrl: `${state.syncUrl}/input`,
                 onEnvelope: handle,
                 onClose,
                 onError,
+                onReconnect: () => {
+                    if (client === candidate) {
+                        recovering = false;
+                        recoverView("sse-reconnect");
+                    }
+                },
             });
         } else {
             throw new Error(`unsupported sync transport: ${state.transport}`);
         }
+        return candidate;
+    }
+
+    async function connect() {
+        client = createClient();
         api.client = client;
         await client.connect();
         connectError = null;

@@ -32,5 +32,5 @@ pub use affinity::{
 pub use pool::CompioTaskDriver;
 pub use types::{
     DriverError, DriverEvent, DriverSubscriptionMailbox, DriverSubscriptionRequest,
-    ExternalRequestHandler, TaskContext,
+    ExternalRequestHandler, ExternalStreamEmitter, ExternalStreamRequestHandler, TaskContext,
 };

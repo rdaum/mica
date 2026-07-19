@@ -27,6 +27,25 @@ use std::sync::Arc;
 pub type ExternalRequestFuture = Pin<Box<dyn Future<Output = Value> + 'static>>;
 pub type ExternalRequestHandler =
     Arc<dyn Fn(ExternalRequest) -> ExternalRequestFuture + Send + Sync>;
+pub type ExternalStreamEmitFuture = Pin<Box<dyn Future<Output = Result<(), String>> + 'static>>;
+
+#[derive(Clone)]
+pub struct ExternalStreamEmitter {
+    emit: Arc<dyn Fn(Value) -> ExternalStreamEmitFuture + Send + Sync>,
+}
+
+impl ExternalStreamEmitter {
+    pub(crate) fn new(emit: Arc<dyn Fn(Value) -> ExternalStreamEmitFuture + Send + Sync>) -> Self {
+        Self { emit }
+    }
+
+    pub async fn emit(&self, value: Value) -> Result<(), String> {
+        (self.emit)(value).await
+    }
+}
+
+pub type ExternalStreamRequestHandler =
+    Arc<dyn Fn(ExternalRequest, ExternalStreamEmitter) -> ExternalRequestFuture + Send + Sync>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskContext {

@@ -128,6 +128,8 @@ pub enum SubscriptionOperation {
 pub trait MailboxRuntime {
     fn create_mailbox(&self) -> Result<(Value, Value), RuntimeError>;
 
+    fn close_mailbox(&self, receiver: &Value) -> Result<(), RuntimeError>;
+
     fn validate_mailbox_sender(&self, sender: &Value) -> Result<(), RuntimeError>;
 
     fn validate_mailbox_receiver(&self, receiver: &Value) -> Result<(), RuntimeError>;
@@ -205,6 +207,16 @@ impl<'ctx, 'kernel> BuiltinContext<'ctx, 'kernel> {
             });
         };
         mailbox_runtime.create_mailbox()
+    }
+
+    pub fn close_mailbox(&mut self, receiver: &Value) -> Result<(), RuntimeError> {
+        let Some(mailbox_runtime) = self.ports.mailbox_runtime.as_ref() else {
+            return Err(RuntimeError::InvalidBuiltinCall {
+                name: Symbol::intern("mailbox_close"),
+                message: "mailbox runtime is not available".to_owned(),
+            });
+        };
+        mailbox_runtime.close_mailbox(receiver)
     }
 
     pub fn send_mailbox(&mut self, sender: Value, value: Value) -> Result<(), RuntimeError> {

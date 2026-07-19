@@ -30,6 +30,11 @@ Suspension is also a commit boundary. A task that calls `suspend`, `read`, `comm
 `mailbox_recv` commits its current transaction before control returns to the driver. When it
 resumes, it continues with a fresh transaction and fresh authority supplied by the caller.
 
+Call `mailbox_close(receiver)` when a task abandons a mailbox-backed operation. Closing through the
+receiver revokes both mailbox capabilities, discards queued messages, and causes external producers
+to observe that delivery has stopped. Cancel any change subscriptions using the mailbox before
+closing it.
+
 That means one logical task may span several transactions:
 
 ```mica

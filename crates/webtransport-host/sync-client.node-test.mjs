@@ -8,6 +8,7 @@ import {
     clearCommandInputAfterSubmit,
     decodeChunkedSyncEnvelope,
     decodeSyncEnvelope,
+    dispatchSyncApplied,
     encodeSyncEnvelope,
     endEventLoading,
     endSubmitLoading,
@@ -17,6 +18,22 @@ import {
     submitKeyMatches,
     SyncKind,
 } from "./sync-client.js";
+
+let applied = null;
+globalThis.window = {
+    dispatchEvent(event) {
+        applied = event;
+    },
+};
+globalThis.CustomEvent = class {
+    constructor(type, options) {
+        this.type = type;
+        this.detail = options?.detail;
+    }
+};
+dispatchSyncApplied({ revision: "7" });
+assert.equal(applied.type, "mica:sync-applied");
+assert.equal(applied.detail.revision, "7");
 
 const encoded = encodeSyncEnvelope({
     kind: SyncKind.ViewDelta,
@@ -127,10 +144,12 @@ assert.equal(decodeSyncEnvelope(streamWrites[0]).payload, "test-need");
 assert.equal(streamWrites[1], "closed");
 
 const sseWrites = [];
+let fakeEventSource = null;
 globalThis.EventSource = class FakeEventSource {
     static CLOSED = 2;
 
     constructor(url) {
+        fakeEventSource = this;
         this.url = url;
         this.readyState = 1;
         this.listeners = new Map();
@@ -157,6 +176,12 @@ globalThis.fetch = async (_url, options) => {
 const sseClient = new MicaSseSyncClient({
     streamUrl: "http://127.0.0.1:8080/sync/events?session=42",
     sendUrl: "http://127.0.0.1:8080/sync/input",
+    onError: () => {
+        sseClient.interruptions = (sseClient.interruptions ?? 0) + 1;
+    },
+    onReconnect: () => {
+        sseClient.reconnections = (sseClient.reconnections ?? 0) + 1;
+    },
 });
 await sseClient.connect();
 await sseClient.needView({
@@ -169,6 +194,12 @@ await sseClient.needView({
 assert.equal(sseWrites.length, 1);
 assert.equal(sseWrites[0].kind, "NeedView");
 assert.equal(sseWrites[0].payload, "sse-need");
+fakeEventSource.readyState = 0;
+fakeEventSource.listeners.get("error")?.({ type: "error" });
+fakeEventSource.readyState = 1;
+fakeEventSource.listeners.get("open")?.({ type: "open" });
+assert.equal(sseClient.interruptions, 1);
+assert.equal(sseClient.reconnections, 1);
 
 let commandFocused = false;
 let localFocused = false;

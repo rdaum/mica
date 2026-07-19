@@ -186,6 +186,7 @@ let child = spawn :tick(actor: actor()) after 5
 let [rx, tx] = mailbox()
 mailbox_send(tx, "ready")
 let ready = mailbox_recv([rx], 0)
+mailbox_close(rx)
 ```
 
 ## Filein Definitions

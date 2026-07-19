@@ -12,6 +12,7 @@ compio.workspace = true
 cyper.workspace = true
 fast-telemetry.workspace = true
 fast-telemetry-export.workspace = true
+futures-util.workspace = true
 http.workspace = true
 mica-auth.workspace = true
 mica-driver.workspace = true

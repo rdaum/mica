@@ -3496,6 +3496,7 @@ dependencies = [
  "cyper",
  "fast-telemetry",
  "fast-telemetry-export",
+ "futures-util",
  "http",
  "mica-auth",
  "mica-driver",
