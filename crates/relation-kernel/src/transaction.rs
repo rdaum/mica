@@ -38,12 +38,17 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
+type DerivedRelations = HashMap<RelationId, RelationState>;
+type TransactionDerivedCache = HashMap<RelationId, Result<DerivedRelations, KernelError>>;
+
 pub struct Transaction<'a> {
     kernel: &'a RelationKernel,
     pub(crate) base: Arc<Snapshot>,
     writes: HashMap<RelationId, RelationWriteOverlay>,
     functional_visible: HashMap<RelationId, FunctionalVisibleMap>,
-    derived_cache: RefCell<Option<Result<HashMap<RelationId, RelationState>, KernelError>>>,
+    derived_cache: RefCell<TransactionDerivedCache>,
+    #[cfg(test)]
+    differential_overlay_work: RefCell<Option<crate::differential::MaintenanceWork>>,
     dispatch_inline_cache: TransactionDispatchCache,
     execution_context: ExecutionContext,
 }
@@ -231,7 +236,9 @@ impl<'a> Transaction<'a> {
             base,
             writes: HashMap::new(),
             functional_visible: HashMap::new(),
-            derived_cache: RefCell::new(None),
+            derived_cache: RefCell::new(HashMap::new()),
+            #[cfg(test)]
+            differential_overlay_work: RefCell::new(None),
             dispatch_inline_cache: TransactionDispatchCache::new(),
             execution_context,
         }
@@ -467,6 +474,13 @@ impl<'a> Transaction<'a> {
             .transaction_read_operations
             .inc(TransactionReadOperation::Scan);
         let metadata = self.base.relation(relation)?.metadata();
+        if self.writes.is_empty() {
+            let rows = self.base.scan(relation, bindings)?;
+            crate::metrics::metrics()
+                .transaction_read_rows
+                .record(TransactionReadOperation::Scan, rows.len() as u64);
+            return Ok(rows);
+        }
         if self.base.rules().is_empty() && !self.writes.contains_key(&relation) {
             if self.base.computed_relations.is_computed_relation(metadata) {
                 let rows = self.scan_extensional_rows(relation, bindings)?;
@@ -485,7 +499,7 @@ impl<'a> Transaction<'a> {
         let mut visible = self.scan_extensional_rows(relation, bindings)?;
 
         if relation_has_active_rule_head(self.base.rules(), relation) {
-            let derived = self.derived_relations()?;
+            let derived = self.derived_relations(relation)?;
             if let Some(rows) = derived.get(&relation) {
                 visible = union_ordered_tuple_rows(visible, rows.scan(bindings)?);
             }
@@ -505,9 +519,16 @@ impl<'a> Transaction<'a> {
         crate::metrics::metrics()
             .transaction_read_operations
             .inc(TransactionReadOperation::EstimateScan);
+        if self.writes.is_empty() {
+            let rows = self.base.estimate_scan(relation, bindings)?;
+            crate::metrics::metrics()
+                .transaction_read_rows
+                .record(TransactionReadOperation::EstimateScan, rows as u64);
+            return Ok(rows);
+        }
         let mut rows = self.estimate_extensional_scan(relation, bindings)?;
         if relation_has_active_rule_head(self.base.rules(), relation)
-            && let Some(derived) = self.derived_relations()?.get(&relation)
+            && let Some(derived) = self.derived_relations(relation)?.get(&relation)
         {
             rows = rows.saturating_add(derived.estimate_scan_count(bindings)?);
         }
@@ -517,19 +538,96 @@ impl<'a> Transaction<'a> {
         Ok(rows)
     }
 
-    fn derived_relations(&self) -> Result<HashMap<RelationId, RelationState>, KernelError> {
-        if self.derived_cache.borrow().is_none() {
-            let derived = RuleSet::new(active_rules(self.base.rules()))
-                .evaluate_fixpoint(
-                    &ExtensionalTransactionReader { tx: self },
-                    &self.execution_context,
-                )
-                .map_err(KernelError::from)
-                .and_then(|derived| build_derived_relations(&self.base.relations, derived))
-                .map(|derived| derived.into_iter().collect());
-            *self.derived_cache.borrow_mut() = Some(derived);
+    fn derived_relations(&self, relation: RelationId) -> Result<DerivedRelations, KernelError> {
+        if let Some(derived) = self.derived_cache.borrow().get(&relation).cloned() {
+            return derived;
         }
-        self.derived_cache.borrow().as_ref().unwrap().clone()
+        let derived = self
+            .incremental_derived_relations(relation)?
+            .map(Ok)
+            .unwrap_or_else(|| {
+                RuleSet::new(active_rules(self.base.rules()))
+                    .evaluate_fixpoint(
+                        &ExtensionalTransactionReader { tx: self },
+                        &self.execution_context,
+                    )
+                    .map_err(KernelError::from)
+                    .and_then(|derived| build_derived_relations(&self.base.relations, derived))
+                    .map(|derived| derived.into_iter().collect())
+            });
+        self.derived_cache
+            .borrow_mut()
+            .insert(relation, derived.clone());
+        derived
+    }
+
+    fn incremental_derived_relations(
+        &self,
+        relation: RelationId,
+    ) -> Result<Option<DerivedRelations>, KernelError> {
+        if self.writes.is_empty() {
+            return Ok(None);
+        }
+        let mut maintained = self.base.maintained_state();
+        if maintained
+            .as_ref()
+            .is_none_or(|maintained| !maintained.serves(relation))
+        {
+            self.base.warm_maintained_relation_result(relation)?;
+            maintained = self.base.maintained_state();
+        }
+        let Some(maintained) = maintained.filter(|maintained| maintained.serves(relation)) else {
+            return Ok(None);
+        };
+        let (overlay, changes) = self.build_overlay_snapshot()?;
+        let started = Instant::now();
+        let maintained =
+            maintained.advance(&self.base, &overlay, &changes, &self.execution_context)?;
+        crate::metrics::record_transaction_differential_overlay(
+            started.elapsed(),
+            maintained.work(),
+        );
+        #[cfg(test)]
+        self.differential_overlay_work
+            .replace(Some(maintained.work().clone()));
+        Ok(Some(
+            maintained
+                .build_derived_relations(&overlay)?
+                .into_iter()
+                .collect(),
+        ))
+    }
+
+    fn build_overlay_snapshot(&self) -> Result<(Snapshot, Vec<FactChange>), KernelError> {
+        let mut overlay = (*self.base).clone();
+        let mut changes = Vec::new();
+        let mut relation_ids = self.writes.keys().copied().collect::<Vec<_>>();
+        relation_ids.sort_unstable();
+        for relation_id in relation_ids {
+            let writes = &self.writes[&relation_id];
+            let relation = overlay
+                .relations
+                .get_mut(&relation_id)
+                .ok_or(KernelError::UnknownRelation(relation_id))?;
+            let base_relation = self.base.relation(relation_id)?;
+            writes.apply_ordered_changes(relation, base_relation, |tuple, kind| {
+                changes.push(FactChange {
+                    relation: relation_id,
+                    tuple: tuple.clone(),
+                    kind: match kind {
+                        RelationMutationKind::Assert => FactChangeKind::Assert,
+                        RelationMutationKind::Retract => FactChangeKind::Retract,
+                    },
+                });
+            });
+        }
+        overlay.version = self.base.version() + 1;
+        overlay.derived_cache = empty_derived_cache();
+        overlay.maintained_cache = empty_maintained_cache();
+        overlay.packed_cache = empty_packed_cache();
+        overlay.dispatch_cache = empty_dispatch_cache();
+        overlay.method_program_cache = empty_method_program_cache();
+        Ok((overlay, changes))
     }
 
     pub(crate) fn estimate_extensional_scan(
@@ -846,7 +944,9 @@ impl<'a> Transaction<'a> {
                 .inc(TransactionWriteOperation::Retract),
         }
         self.record_functional_change(relation, &tuple, change)?;
-        *self.derived_cache.borrow_mut() = None;
+        self.derived_cache.borrow_mut().clear();
+        #[cfg(test)]
+        self.differential_overlay_work.replace(None);
         Ok(())
     }
 
@@ -1305,10 +1405,19 @@ impl From<LocalChange> for RelationMutationKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Atom, ComputedRelation, ComputedRelationRead, RelationMetadata, Rule, Term};
     use mica_var::Identity;
 
     fn rel(id: u64) -> RelationId {
         Identity::new(id).unwrap()
+    }
+
+    fn int(value: i64) -> Value {
+        Value::int(value).unwrap()
+    }
+
+    fn var(name: &str) -> Term {
+        Term::Var(Symbol::intern(name))
     }
 
     #[test]
@@ -1357,6 +1466,236 @@ mod tests {
             cache
                 .positional(relations, &selectors[2], &[], POSITIONAL_DISPATCH_CACHED,)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn transaction_overlay_reuses_committed_state_with_less_work_than_complete_evaluation() {
+        let kernel = RelationKernel::new();
+        kernel
+            .create_relation(RelationMetadata::new(rel(101), Symbol::intern("Base"), 1))
+            .unwrap();
+        kernel
+            .create_relation(RelationMetadata::new(
+                rel(102),
+                Symbol::intern("Derived"),
+                1,
+            ))
+            .unwrap();
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(102),
+                    [var("item")],
+                    [Atom::positive(rel(101), [var("item")])],
+                ),
+                "Derived(item) :- Base(item)",
+            )
+            .unwrap();
+        let mut seed = kernel.begin();
+        for item in 0..4_096 {
+            seed.assert(rel(101), Tuple::from([int(item)])).unwrap();
+        }
+        seed.commit().unwrap();
+        let committed = kernel.snapshot();
+        assert_eq!(committed.scan(rel(102), &[None]).unwrap().len(), 4_096);
+        let committed_maintained = committed.maintained_state().unwrap();
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(101), Tuple::from([int(4_096)])).unwrap();
+        let complete = RuleSet::new(active_rules(tx.base.rules()))
+            .evaluate_fixpoint_with_stats(
+                &ExtensionalTransactionReader { tx: &tx },
+                &ExecutionContext::serial(),
+            )
+            .unwrap();
+        let actual = tx.scan(rel(102), &[None]).unwrap();
+        assert_eq!(actual, complete.derived[&rel(102)]);
+        let work = tx.differential_overlay_work.borrow().clone().unwrap();
+        assert_eq!(work.input_changes, 1);
+        assert_eq!(work.rows_visited, 1);
+        assert!(work.rows_visited.saturating_mul(100) < complete.stats.candidate_rows);
+
+        assert_eq!(
+            kernel.snapshot().scan(rel(102), &[None]).unwrap().len(),
+            4_096
+        );
+        assert!(Arc::ptr_eq(
+            &committed_maintained,
+            &kernel.snapshot().maintained_state().unwrap(),
+        ));
+        drop(tx);
+        assert_eq!(
+            kernel.snapshot().scan(rel(102), &[None]).unwrap().len(),
+            4_096
+        );
+    }
+
+    struct ConstantComputed;
+
+    impl ComputedRelation for ConstantComputed {
+        fn name(&self) -> &'static str {
+            "transaction-test-constant"
+        }
+
+        fn matches(&self, metadata: &RelationMetadata) -> bool {
+            metadata.name().name() == Some("Computed")
+        }
+
+        fn required_bound_positions(&self, _metadata: &RelationMetadata) -> &[u16] {
+            &[]
+        }
+
+        fn scan(
+            &self,
+            _reader: &dyn ComputedRelationRead,
+            _metadata: &RelationMetadata,
+            _bindings: &[Option<Value>],
+        ) -> Result<Vec<Tuple>, KernelError> {
+            Ok(vec![Tuple::from([int(7)])])
+        }
+    }
+
+    #[test]
+    fn transaction_overlay_preserves_computed_relation_fallback() {
+        let kernel = RelationKernel::with_provider_and_computed_relations(
+            Arc::new(crate::InMemoryCommitProvider::new()),
+            [Arc::new(ConstantComputed) as Arc<dyn ComputedRelation>],
+        );
+        for (relation, name) in [(111, "Computed"), (112, "Copy"), (113, "Local")] {
+            kernel
+                .create_relation(RelationMetadata::new(
+                    rel(relation),
+                    Symbol::intern(name),
+                    1,
+                ))
+                .unwrap();
+        }
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(112),
+                    [var("value")],
+                    [Atom::positive(rel(111), [var("value")])],
+                ),
+                "Copy(value) :- Computed(value)",
+            )
+            .unwrap();
+
+        let mut tx = kernel.begin();
+        tx.assert(rel(113), Tuple::from([int(1)])).unwrap();
+        assert_eq!(
+            tx.scan(rel(112), &[None]).unwrap(),
+            vec![Tuple::from([int(7)])]
+        );
+        assert!(tx.differential_overlay_work.borrow().is_none());
+        assert!(kernel.snapshot().maintained_state().is_none());
+    }
+
+    #[test]
+    fn recursive_and_negated_transaction_overlays_match_complete_evaluation() {
+        let kernel = RelationKernel::new();
+        for (relation, name, arity) in [
+            (121, "Edge", 2),
+            (122, "Reachable", 2),
+            (123, "Node", 1),
+            (124, "Blocked", 1),
+            (125, "Visible", 1),
+        ] {
+            kernel
+                .create_relation(RelationMetadata::new(
+                    rel(relation),
+                    Symbol::intern(name),
+                    arity,
+                ))
+                .unwrap();
+        }
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(122),
+                    [var("from"), var("to")],
+                    [Atom::positive(rel(121), [var("from"), var("to")])],
+                ),
+                "Reachable(from, to) :- Edge(from, to)",
+            )
+            .unwrap();
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(122),
+                    [var("from"), var("to")],
+                    [
+                        Atom::positive(rel(121), [var("from"), var("middle")]),
+                        Atom::positive(rel(122), [var("middle"), var("to")]),
+                    ],
+                ),
+                "Reachable(from, to) :- Edge(from, middle), Reachable(middle, to)",
+            )
+            .unwrap();
+        kernel
+            .install_rule(
+                Rule::new(
+                    rel(125),
+                    [var("node")],
+                    [
+                        Atom::positive(rel(123), [var("node")]),
+                        Atom::negated(rel(124), [var("node")]),
+                    ],
+                ),
+                "Visible(node) :- Node(node), !Blocked(node)",
+            )
+            .unwrap();
+
+        let mut seed = kernel.begin();
+        for tuple in [(1, 2), (2, 3)] {
+            seed.assert(rel(121), Tuple::from([int(tuple.0), int(tuple.1)]))
+                .unwrap();
+        }
+        for node in [1, 2, 3] {
+            seed.assert(rel(123), Tuple::from([int(node)])).unwrap();
+        }
+        seed.commit().unwrap();
+        assert_eq!(
+            kernel
+                .snapshot()
+                .scan(rel(122), &[None, None])
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(kernel.snapshot().scan(rel(125), &[None]).unwrap().len(), 3);
+
+        let mut tx = kernel.begin();
+        tx.retract(rel(121), Tuple::from([int(1), int(2)])).unwrap();
+        tx.assert(rel(121), Tuple::from([int(3), int(4)])).unwrap();
+        tx.assert(rel(124), Tuple::from([int(2)])).unwrap();
+        let complete = RuleSet::new(active_rules(tx.base.rules()))
+            .evaluate_fixpoint_with_stats(
+                &ExtensionalTransactionReader { tx: &tx },
+                &ExecutionContext::serial(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            tx.scan(rel(122), &[None, None]).unwrap(),
+            complete.derived[&rel(122)]
+        );
+        assert!(tx.differential_overlay_work.borrow().is_some());
+        assert_eq!(
+            tx.scan(rel(125), &[None]).unwrap(),
+            complete.derived[&rel(125)]
+        );
+        assert!(tx.differential_overlay_work.borrow().is_some());
+
+        tx.commit().unwrap();
+        assert_eq!(
+            kernel.snapshot().scan(rel(122), &[None, None]).unwrap(),
+            complete.derived[&rel(122)]
+        );
+        assert_eq!(
+            kernel.snapshot().scan(rel(125), &[None]).unwrap(),
+            complete.derived[&rel(125)]
         );
     }
 }

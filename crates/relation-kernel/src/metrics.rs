@@ -219,6 +219,15 @@ pub struct RelationKernelMetrics {
     #[help = "Rows in each differential recursive frontier"]
     pub differential_frontier_rows: Histogram,
 
+    #[help = "Transaction-local differential overlay duration in microseconds"]
+    pub transaction_differential_overlay_duration_us: Histogram,
+
+    #[help = "Input changes per transaction-local differential overlay"]
+    pub transaction_differential_overlay_input_changes: Histogram,
+
+    #[help = "Rows visited per transaction-local differential overlay"]
+    pub transaction_differential_overlay_rows_visited: Histogram,
+
     #[help = "Packed union execution placement decisions"]
     pub parallel_union_placements: LabeledCounter<ParallelUnionPlacement>,
 
@@ -313,6 +322,17 @@ impl RelationKernelMetrics {
             differential_compaction_rows: Histogram::new(COUNT_BUCKETS, shard_count),
             differential_recursive_iterations: Histogram::new(COUNT_BUCKETS, shard_count),
             differential_frontier_rows: Histogram::new(COUNT_BUCKETS, shard_count),
+            transaction_differential_overlay_duration_us: Histogram::with_latency_buckets(
+                shard_count,
+            ),
+            transaction_differential_overlay_input_changes: Histogram::new(
+                COUNT_BUCKETS,
+                shard_count,
+            ),
+            transaction_differential_overlay_rows_visited: Histogram::new(
+                COUNT_BUCKETS,
+                shard_count,
+            ),
             parallel_union_placements: LabeledCounter::new(shard_count),
             parallel_union_input_rows: Histogram::new(PARALLEL_INPUT_ROW_BUCKETS, shard_count),
             parallel_union_duration_us: Histogram::with_latency_buckets(shard_count),
@@ -526,6 +546,22 @@ pub(crate) fn record_differential_maintenance(
     for rows in &work.frontier_rows {
         metrics.differential_frontier_rows.record(*rows as u64);
     }
+}
+
+pub(crate) fn record_transaction_differential_overlay(
+    elapsed: Duration,
+    work: &crate::differential::MaintenanceWork,
+) {
+    let metrics = metrics();
+    metrics
+        .transaction_differential_overlay_duration_us
+        .record(elapsed.as_micros().min(u128::from(u64::MAX)) as u64);
+    metrics
+        .transaction_differential_overlay_input_changes
+        .record(work.input_changes as u64);
+    metrics
+        .transaction_differential_overlay_rows_visited
+        .record(work.rows_visited as u64);
 }
 
 pub fn derived_relation_summaries(limit: usize) -> Vec<DerivedRelationSummary> {

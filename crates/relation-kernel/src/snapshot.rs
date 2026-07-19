@@ -486,6 +486,13 @@ impl Snapshot {
         self.maintained_cache.lock().unwrap().clone()
     }
 
+    pub(crate) fn warm_maintained_relation_result(
+        &self,
+        relation: RelationId,
+    ) -> Result<(), KernelError> {
+        self.derived_relations(relation).map(|_| ())
+    }
+
     pub(crate) fn cached_applicable_method_calls(
         &self,
         relations: DispatchRelations,
