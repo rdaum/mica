@@ -110,6 +110,119 @@ from a retained commit cursor.
 Mailboxes and their capabilities are ephemeral. Store durable progress as relation facts, not as a
 subscription or mailbox value. See [Task Control](../runtime/task-control.md) for the mailbox model.
 
+### A Worked Example: Reacting When Something Becomes Visible
+
+The snippets above show the call shapes in isolation. To see how `subscribe_changes` is used in a
+task, consider a small watcher that tells Alice whenever an object enters or leaves her sight.
+
+The watcher will subscribe to a derived relation that pairs each visible object with its current
+name. Carrying the name in the derived row is deliberate: a retraction message contains the row as
+it was _before_ it disappeared, so the name is preserved in the message even if the object's `Name`
+fact was removed in the same commit. If the verb instead looked the name up fresh on retraction, it
+might find nothing.
+
+This example assumes that an object's `Name` does not change while it remains visible. A rename
+while visible would show up as a retraction/assertion pair on `VisibleNamedObject` (the old name row
+leaving, the new name row arriving) and the watcher below would announce it as "no longer see … see
+…" rather than as a rename. A production watcher that cares about renames should subscribe to the
+stable `VisibleTo` identity instead and render names from a separate, snapshot-derived read, or
+detect adjacent retraction/assertion pairs with the same `object` value and collapse them.
+
+```mica
+VisibleTo(actor, object) :-
+  Actor(actor),
+  Object(object),
+  LocatedIn(actor, place),
+  LocatedIn(object, place)
+
+VisibleNamedObject(actor, object, name) :-
+  VisibleTo(actor, object),
+  Name(object, name)
+```
+
+The verb subscribes to `VisibleNamedObject` rows where Alice is the actor, then loops on the
+mailbox. For each change message it reads the `:kind` field, dispatches on it, and emits one line
+per object that appeared or disappeared:
+
+```mica
+verb watch_sight(actor @ #player)
+  let [receiver, sender] = mailbox()
+  let subscription = subscribe_changes(
+    sender,
+    :relation,
+    :VisibleNamedObject,
+    [actor, nothing, nothing],
+    :snapshot
+  )
+  commit()
+
+  while true
+    let ready = mailbox_recv([receiver])
+    for group in ready
+      let messages = group[1]
+      for message in messages
+        let kind = message[:kind]
+        if kind == :changes
+          for row in message[:assertions]
+            let name = row[2]
+            emit(actor, string_concat("You see ", name, "."))
+          end
+          for row in message[:retractions]
+            let name = row[2]
+            emit(actor, string_concat("You no longer see ", name, "."))
+          end
+        elseif kind == :resynchronize
+          emit(actor, "Sight changes came too fast; stopping. Restart to reread the room.")
+          cancel_subscription(subscription)
+          commit()
+          return
+        elseif kind == :revoked
+          emit(actor, "You may no longer observe that.")
+          cancel_subscription(subscription)
+          commit()
+          return
+        end
+      end
+    end
+  end
+end
+```
+
+A few things this example is meant to show:
+
+- The subscription is registered with a _bound_ first column (`actor`) and _open_ later columns
+  (`nothing`). It fires only when a `VisibleNamedObject` row whose actor is Alice changes. A
+  subscription with `[nothing, nothing, nothing]` would fire for every actor's visibility changes,
+  which is more traffic than this verb needs.
+- `:snapshot` causes the first delivered message to list everything Alice currently sees as
+  assertions. The loop treats that initial batch the same way it treats later changes, so the verb
+  announces her starting view and then keeps announcing changes without a separate initial case.
+- Both terminal branches cancel the subscription before returning. `:resynchronize` and `:revoked`
+  stop further delivery, but they do not by themselves remove the runtime registration; an explicit
+  `cancel_subscription` followed by `commit()` does. The `commit()` also publishes the final `emit`
+  so the host sees the parting line.
+- There is no explicit `commit()` inside the loop body. `mailbox_recv` is itself a commit boundary:
+  it commits the current transaction before waiting, so the `emit` calls from one iteration are
+  published when the next `mailbox_recv` runs. An explicit `commit()` between iterations would only
+  force publication slightly earlier and is not needed for the effects to reach the host.
+
+A more durable consumer could remember the last commit cursor it processed (the `:cursor` field of
+each change message) and, on `:resynchronize`, register a new `:changes`-only subscription starting
+from that cursor. If the runtime no longer retains history that far back, the new subscription will
+itself signal `:resynchronize`, and the consumer must fall back to a fresh `:snapshot`.
+
+Subscription authority comes from the task's actor (when present) or its principal, not from the
+`actor` argument passed into the verb. That argument selects the bound column and is used for
+dispatch; the runtime's read authority check uses whatever authority context the task was started or
+resumed with, and it checks the relation surface being subscribed to — here, `VisibleNamedObject` —
+not every relation used inside its rule. So this verb is expected to run _as_ `actor` (for example,
+dispatched through a session that has that actor's authority), and the task's authority must permit
+reading `VisibleNamedObject`. If that authority is later revoked, the runtime sends `:revoked`
+instead of leaking further changes, as the branch above handles.
+
+This is the shape `subscribe_changes` is designed for: a small piece of derived state tied to one
+identity, observed continuously, with effects published as that state changes.
+
 ## Differential DOM Updates
 
 Mica's synchronized DOM views use the same change path without putting subscription plumbing into

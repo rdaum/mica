@@ -16,7 +16,7 @@
 - [Relational Mental Model](./language/relational-mental-model.md)
 - [Relations](./language/relations.md)
 - [Rules](./language/rules.md)
-- [Differential Datalog and Live Updates](./language/differential-updates.md)
+- [Changing Worlds and Live Updates](./language/differential-updates.md)
 - [Computed Relations](./language/computed-relations.md)
 - [Assertions and Retractions](./language/assertions-and-retractions.md)
 - [Verbs, Roles, and Dispatch](./language/verbs-roles-dispatch.md)
