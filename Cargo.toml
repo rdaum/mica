@@ -63,7 +63,7 @@ cranelift-codegen = { version = "0.133.1", default-features = false, features = 
 cranelift-frontend = { version = "0.133.1", default-features = false, features = ["std"] }
 cranelift-jit = { version = "0.133.1", default-features = false }
 cranelift-module = { version = "0.133.1", default-features = false, features = ["std"] }
-cyper = { version = "0.8.0", default-features = false, features = ["native-tls", "stream"] }
+cyper = { version = "0.9.0", default-features = false, features = ["native-tls", "stream"] }
 fast-telemetry = "0.8"
 fast-telemetry-export = { version = "0.8", default-features = false, features = ["compio"] }
 fjall = "3.1"
