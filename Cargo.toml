@@ -72,7 +72,7 @@ h3-webtransport = "0.1.2"
 http = "1.4"
 httparse = "1.10"
 pollster = "0.4"
-rand = "0.9"
+rand = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 rayon = "1.12"
 rcgen = "0.14"
