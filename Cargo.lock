@@ -3454,7 +3454,7 @@ dependencies = [
  "mica-driver",
  "mica-runtime",
  "mica-var",
- "rand 0.9.5",
+ "rand 0.10.2",
  "rand_core 0.6.4",
  "rusty_paseto",
  "serde",
