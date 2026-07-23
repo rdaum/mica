@@ -7,5 +7,5 @@ multilingual = false
 src = "src"
 
 [output.html]
-git-repository-url = "https://codeberg.org/timbran/mica"
-edit-url-template = "https://codeberg.org/timbran/mica/src/branch/main/mdbook/{path}"
+git-repository-url = "https://github.com/timbran-project/mica"
+edit-url-template = "https://github.com/timbran-project/timbran/mica/src/branch/main/mdbook/{path}"

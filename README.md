@@ -208,7 +208,8 @@ changes.
 
 Mica's surface language is intended to feel familiar and readable. It borrows from Julia, Dylan,
 Datalog, and Algol-family languages. It will also feel broadly familiar to people who have been
-exposed to MOO (and the dialect of it in my [mooR](https://codeberg.org/timbran/moor) project.)
+exposed to MOO (and the dialect of it in my [mooR](https://github.com/timbran-project/moor)
+project.)
 
 Here's an example snippet which shows various bits of syntax to give you a sense of the flavour of
 the language:
@@ -350,7 +351,7 @@ about and how they may be used.
 
 ## Background
 
-Mica grows out of lessons from [mooR](https://codeberg.org/timbran/moor), my modern rewrite of
+Mica grows out of lessons from [mooR](https://github.com/timbran-project/moor), my modern rewrite of
 LambdaMOO: a compatibility-focused MOO server with modern conveniences, transactional command
 execution, durable storage, and a modern Rust runtime. Through that lineage, it inherits the model
 of image-based authoring, multiuser worlds, long-lived shared state, and online extension.

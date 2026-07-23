@@ -4,7 +4,7 @@
 ;; Keywords: languages mica
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "26.1"))
-;; URL: https://codeberg.org/timbran/mica
+;; URL: https://github.com/timbran-project/mica
 
 ;;; Commentary:
 
